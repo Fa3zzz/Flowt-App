@@ -187,13 +187,12 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
   final titleController = TextEditingController();
   final scrollController = ScrollController();
 
-  // blocks: [{ type: "text", content: "", controller: TextEditingController? }, { type: "image", path: "" }, ...]
   List<Map<String, dynamic>> blocks = [
     {"type": "text", "content": "", "controller": null}
   ];
 
   String? selectedText;
-  final Map<String, int> links = {}; // snippet -> noteId
+  final Map<String, int> links = {};
 
   @override
   void dispose() {
@@ -206,18 +205,28 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
     super.dispose();
   }
 
-  Future<void> _pickImage(ImageSource source, int insertIndex) async {
+  Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(source: source);
     if (pickedFile != null) {
       setState(() {
-        blocks.insert(insertIndex + 1, {"type": "image", "path": pickedFile.path});
-        blocks.insert(insertIndex + 2, {"type": "text", "content": "", "controller": null});
+        // Add image block at end
+        blocks.add({"type": "image", "path": pickedFile.path});
+        // Followed by a new empty text block
+        blocks.add({"type": "text", "content": "", "controller": null});
       });
+
+      // Scroll to bottom
+      await Future.delayed(const Duration(milliseconds: 200));
+      scrollController.animateTo(
+        scrollController.position.maxScrollExtent + 200,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
     }
   }
 
-  void _showImageOptions(int insertIndex) {
+  void _showImageOptions() {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.grey[900],
@@ -228,7 +237,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
             title: const Text("Take Photo", style: TextStyle(color: Colors.white54)),
             onTap: () {
               Navigator.pop(context);
-              _pickImage(ImageSource.camera, insertIndex);
+              _pickImage(ImageSource.camera);
             },
           ),
           ListTile(
@@ -236,7 +245,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
             title: const Text("Choose from Gallery", style: TextStyle(color: Colors.white54)),
             onTap: () {
               Navigator.pop(context);
-              _pickImage(ImageSource.gallery, insertIndex);
+              _pickImage(ImageSource.gallery);
             },
           ),
         ]),
@@ -291,7 +300,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                   );
                   final key = await notesBox.add(newNote);
                   setState(() {
-                    links[selected] = key; // store only the link; do NOT save this note itself yet
+                    links[selected] = key;
                   });
                 },
               ),
@@ -355,123 +364,101 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
           if (selectedText != null)
             IconButton(
               icon: const Icon(Icons.link, color: Colors.white54),
-              onPressed: () async {
-                await _showLinkOptions(selectedText!);
-              },
+              onPressed: () async => await _showLinkOptions(selectedText!),
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.image_outlined, color: Colors.white54),
+              onPressed: _showImageOptions,
             ),
         ],
       ),
       body: SingleChildScrollView(
         controller: scrollController,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Column(children: [
-          TextField(
-            controller: titleController,
-            style: const TextStyle(color: Colors.white54),
-            decoration: InputDecoration(
-              filled: true,
-              fillColor: Colors.grey[900],
-              hintText: "Title",
-              border: const OutlineInputBorder(),
-              hintStyle: const TextStyle(color: Colors.grey),
+        child: Column(
+          children: [
+            TextField(
+              controller: titleController,
+              style: const TextStyle(color: Colors.white54),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: Colors.grey[900],
+                hintText: "Title",
+                border: const OutlineInputBorder(),
+                hintStyle: const TextStyle(color: Colors.grey),
+              ),
             ),
-          ),
-          const SizedBox(height: 12),
+            const SizedBox(height: 12),
+            ...blocks.asMap().entries.map((entry) {
+              final index = entry.key;
+              final b = entry.value;
 
-          // Inline blocks
-          ...blocks.asMap().entries.map((entry) {
-            final index = entry.key;
-            final block = entry.value;
-
-            if (block["type"] == "text") {
-              // Ensure stable controller per block and listen for selection changes
-              if (block["controller"] == null) {
-                final c = TextEditingController(text: block["content"] ?? "");
-                c.addListener(() {
-                  // keep content in sync
-                  block["content"] = c.text;
-
-                  // react to selection changes (this listener fires for selection changes too)
-                  final sel = c.selection;
-                  if (sel.start != sel.end && sel.start >= 0 && sel.end <= c.text.length) {
-                    final s = c.text.substring(sel.start, sel.end);
-                    if (s.trim().isNotEmpty) {
-                      if (selectedText != s) {
-                        setState(() => selectedText = s);
+              if (b["type"] == "text") {
+                if (b["controller"] == null) {
+                  final c = TextEditingController(text: b["content"] ?? "");
+                  c.addListener(() {
+                    b["content"] = c.text;
+                    final sel = c.selection;
+                    if (sel.start != sel.end &&
+                        sel.start >= 0 &&
+                        sel.end <= c.text.length) {
+                      final s = c.text.substring(sel.start, sel.end);
+                      if (s.trim().isNotEmpty) {
+                        if (selectedText != s) setState(() => selectedText = s);
                       }
+                    } else {
+                      if (selectedText != null) setState(() => selectedText = null);
                     }
-                  } else {
-                    if (selectedText != null) setState(() => selectedText = null);
-                  }
-                });
-                block["controller"] = c;
-              }
-              final controller = block["controller"] as TextEditingController;
-
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: TextField(
-                  controller: controller,
-                  style: const TextStyle(color: Colors.white54, fontSize: 16),
-                  decoration: InputDecoration(
-                    hintText: index == 0 ? "Description……" : "",
-                    hintStyle: const TextStyle(color: Colors.grey),
-                    border: InputBorder.none,
-                    suffixIcon: IconButton(
-                      icon: const Icon(Icons.image_outlined, color: Colors.white54, size: 22),
-                      onPressed: () => _showImageOptions(index),
+                  });
+                  b["controller"] = c;
+                }
+                final c = b["controller"] as TextEditingController;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: TextField(
+                    controller: c,
+                    style: const TextStyle(color: Colors.white54, fontSize: 16),
+                    decoration: InputDecoration(
+                      hintText: index == 0 ? "Description……" : "",
+                      hintStyle: const TextStyle(color: Colors.grey),
+                      border: InputBorder.none,
                     ),
+                    keyboardType: TextInputType.multiline,
+                    maxLines: null,
                   ),
-                  keyboardType: TextInputType.multiline,
-                  maxLines: null,
-                ),
-              );
-            } else if (block["type"] == "image") {
-              final file = File(block["path"]);
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Stack(
-                  alignment: Alignment.topRight,
-                  children: [
-                    GestureDetector(
-                      onTap: () => _openFullScreen(file),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Image.file(file, width: double.infinity, fit: BoxFit.cover),
+                );
+              } else if (b["type"] == "image") {
+                final file = File(b["path"]);
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Stack(
+                    alignment: Alignment.topRight,
+                    children: [
+                      GestureDetector(
+                        onTap: () => _openFullScreen(file),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.file(file, width: double.infinity, fit: BoxFit.cover),
+                        ),
                       ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.red),
-                      onPressed: () {
-                        setState(() {
-                          // if removing a text block, dispose its controller
-                          if (blocks[index]['type'] == 'text' && blocks[index]['controller'] is TextEditingController) {
-                            (blocks[index]['controller'] as TextEditingController).dispose();
-                          }
-                          blocks.removeAt(index);
-
-                          // Remove empty text block if right after image
-                          if (index < blocks.length &&
-                              blocks[index]['type'] == 'text' &&
-                              (blocks[index]['content'] == null ||
-                                  blocks[index]['content'].toString().trim().isEmpty)) {
-                            if (blocks[index]['controller'] is TextEditingController) {
-                              (blocks[index]['controller'] as TextEditingController).dispose();
-                            }
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.red),
+                        onPressed: () {
+                          setState(() {
                             blocks.removeAt(index);
-                          }
-                        });
-                      },
-                    ),
-                  ],
-                ),
-              );
-            }
-            return const SizedBox.shrink();
-          }).toList(),
-
-          const SizedBox(height: 80),
-        ]),
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                );
+              }
+              return const SizedBox.shrink();
+            }),
+            const SizedBox(height: 80),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: const Color(0xFF4B0082),
@@ -490,7 +477,6 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
             description: description.isNotEmpty ? description : null,
             imagePaths: imagePaths,
             contentBlocks: blocks.map((b) {
-              // strip controllers from saved contentBlocks
               if (b['type'] == 'text') {
                 return {
                   "type": "text",
@@ -499,7 +485,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
               }
               return b;
             }).toList(),
-            links: links, // ✅ only linking info; no duplicate temp save
+            links: links,
           );
 
           Navigator.pop(context, newNote);
@@ -509,8 +495,6 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
     );
   }
 }
-
-
 
 
 
