@@ -830,6 +830,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
         itemCount: blocks.length,
         itemBuilder: (context, index) {
           final b = blocks[index];
+
           if (b['type'] == 'text') {
             final c = b['controller'] as TextEditingController;
             return Padding(
@@ -847,7 +848,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                     )
                   : SelectableText.rich(
                       TextSpan(children: _buildDescriptionSpans(b['content'] ?? '')),
-                      style: const TextStyle(color: Colors.white54, fontSize: 16),
+                      style:
+                          const TextStyle(color: Colors.white54, fontSize: 16),
                       onSelectionChanged: (sel, cause) {
                         final text = (b['content'] ?? '') as String;
                         if (sel.start != sel.end &&
@@ -862,9 +864,44 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                     ),
             );
           }
+
+          else if (b['type'] == 'image') {
+            final file = File(b['path']);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Stack(
+                alignment: Alignment.topRight,
+                children: [
+                  GestureDetector(
+                    onTap: () => _openFullScreen(file),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.file(
+                        file,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                  if (isEditingDescription)
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.red),
+                      onPressed: () {
+                        setState(() {
+                          blocks.removeAt(index);
+                          _safeSave(widget.note);
+                        });
+                      },
+                    ),
+                ],
+              ),
+            );
+          }
+
           return const SizedBox.shrink();
         },
       ),
+
       floatingActionButton: FloatingActionButton(
         backgroundColor: const Color(0xFF4B0082),
         onPressed: () {
