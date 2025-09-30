@@ -19,10 +19,12 @@ class NoteAdapter extends TypeAdapter<Note> {
     return Note(
       title: fields[0] as String,
       description: fields[1] as String?,
-      links: (fields[2] as Map?)?.cast<String, int>(),
+      links: (fields[2] as List?)
+          ?.map((dynamic e) => (e as Map).cast<String, String>())
+          ?.toList(),
       imagePaths: (fields[3] as List).cast<String>(),
       contentBlocks: (fields[4] as List?)
-          ?.map((dynamic e) => (e as Map).cast<String, dynamic>())
+          ?.map((dynamic e) => (e as Map).cast<String, String>())
           ?.toList(),
     );
   }

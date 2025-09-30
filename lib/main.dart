@@ -1,17 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:hive/hive.dart';
-import 'package:hive_flutter/hive_flutter.dart';
-
 import 'package:flutter/gestures.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
-import 'package:flutter/material.dart';
-
-
-
-
-
+import 'package:permission_handler/permission_handler.dart';
+import 'package:hive/hive.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:uuid/uuid.dart';
 part 'main.g.dart';
+
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -54,24 +50,25 @@ class Note extends HiveObject {
   String? description;
 
   @HiveField(2)
-  Map<String, int> links;
+  final List<Map<String, String>> links;
 
   @HiveField(3)
   List<String> imagePaths;
 
   @HiveField(4)
-  List<Map<String, dynamic>>? contentBlocks;
+  List<Map<String, String>> contentBlocks;
 
   Note({
-  required this.title,
-  this.description,
-  Map<String, int>? links,
-  this.imagePaths = const [],
-  List<Map<String, dynamic>>? contentBlocks,
-})  : links = links ?? {},
-      contentBlocks = contentBlocks ?? [];
-
+    required this.title,
+    this.description,
+    List<Map<String, String>>? links,
+    this.imagePaths = const [],
+    List<Map<String, String>>? contentBlocks,
+  })  : links = links ?? [],
+        contentBlocks = contentBlocks ?? [];
 }
+
+
 
 class NotesHome extends StatefulWidget {
   const NotesHome({super.key});
@@ -192,7 +189,14 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
   ];
 
   String? selectedText;
-  final Map<String, int> links = {};
+
+  // ✅ links must match Note model: List<Map<String, String>>
+  final List<Map<String, String>> links = [];
+
+  // ✅ track the exact selection to persist ranges
+  int? selectedBlockIndex;
+  int? selectedStart;
+  int? selectedEnd;
 
   @override
   void dispose() {
@@ -269,8 +273,23 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
   }
 
   Future<void> _showLinkOptions(String selected) async {
-    final notesBox = Hive.box<Note>('notesBox_v2');
-    final existingLink = links[selected];
+    // must have a concrete selection range & block
+    if (selectedBlockIndex == null || selectedStart == null || selectedEnd == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select text to link')),
+      );
+      return;
+    }
+
+    // find by text safely
+    final existingIndex = links.indexWhere((l) =>
+        l["text"] == selected &&
+        l["block"] == selectedBlockIndex.toString() &&
+        l["start"] == selectedStart.toString() &&
+        l["end"] == selectedEnd.toString());
+
+    final hasExisting = existingIndex != -1;
+    final existingLink = hasExisting ? links[existingIndex] : null;
 
     return showModalBottomSheet(
       context: context,
@@ -278,7 +297,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
       builder: (context) {
         return SafeArea(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            if (existingLink == null) ...[
+            if (!hasExisting) ...[
               ListTile(
                 title: const Text("Link to existing note", style: TextStyle(color: Colors.white54)),
                 onTap: () {
@@ -296,11 +315,19 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                     contentBlocks: [
                       {"type": "text", "content": ""}
                     ],
-                    links: {},
+                    links: const [],
                   );
-                  final key = await notesBox.add(newNote);
+                  final key = await Hive.box<Note>('notesBox_v2').add(newNote);
                   setState(() {
-                    links[selected] = key;
+                    links.add({
+                      "id": const Uuid().v4(),
+                      "text": selected,
+                      "noteId": key.toString(),
+                      // ✅ store position
+                      "block": selectedBlockIndex.toString(),
+                      "start": selectedStart.toString(),
+                      "end": selectedEnd.toString(),
+                    });
                   });
                 },
               ),
@@ -310,7 +337,9 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                 onTap: () {
                   Navigator.pop(context);
                   setState(() {
-                    links.remove(selected);
+                    if (existingLink != null) {
+                      links.removeWhere((l) => l["id"] == existingLink["id"]);
+                    }
                   });
                 },
               ),
@@ -341,8 +370,23 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                     return ListTile(
                       title: Text(n.title),
                       onTap: () {
+                        if (selectedBlockIndex == null || selectedStart == null || selectedEnd == null) {
+                          Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Select text to link')),
+                          );
+                          return;
+                        }
                         setState(() {
-                          links[selected] = n.key as int;
+                          links.add({
+                            "id": const Uuid().v4(),
+                            "text": selected,
+                            "noteId": n.key.toString(),
+                            // ✅ store position
+                            "block": selectedBlockIndex.toString(),
+                            "start": selectedStart.toString(),
+                            "end": selectedEnd.toString(),
+                          });
                         });
                         Navigator.pop(context);
                       },
@@ -399,16 +443,29 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                   final c = TextEditingController(text: b["content"] ?? "");
                   c.addListener(() {
                     b["content"] = c.text;
+
                     final sel = c.selection;
                     if (sel.start != sel.end &&
                         sel.start >= 0 &&
                         sel.end <= c.text.length) {
                       final s = c.text.substring(sel.start, sel.end);
                       if (s.trim().isNotEmpty) {
-                        if (selectedText != s) setState(() => selectedText = s);
+                        setState(() {
+                          selectedText = s;
+                          selectedBlockIndex = index;     // ✅ capture block
+                          selectedStart = sel.start;      // ✅ capture start
+                          selectedEnd = sel.end;          // ✅ capture end
+                        });
                       }
                     } else {
-                      if (selectedText != null) setState(() => selectedText = null);
+                      if (selectedText != null) {
+                        setState(() {
+                          selectedText = null;
+                          selectedBlockIndex = null;
+                          selectedStart = null;
+                          selectedEnd = null;
+                        });
+                      }
                     }
                   });
                   b["controller"] = c;
@@ -465,27 +522,43 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
         onPressed: () {
           final imagePaths = blocks
               .where((b) => b["type"] == "image")
-              .map<String>((b) => b["path"] as String)
+              .map<String>((b) => (b["path"] ?? "").toString())
               .toList();
-          final description = blocks
+
+          final contentBlocks = blocks.map<Map<String, String>>((b) {
+            final type = (b['type'] ?? '').toString();
+            if (type == 'text') {
+              return {
+                "type": "text",
+                "content": (b["content"] ?? "").toString(),
+              };
+            } else if (type == 'image') {
+              return {
+                "type": "image",
+                "path": (b["path"] ?? "").toString(),
+              };
+            }
+            return {"type": "text", "content": ""};
+          }).toList();
+
+          final description = contentBlocks
               .where((b) => b["type"] == "text")
-              .map<String>((b) => (b["content"] ?? "") as String)
+              .map((b) => b["content"] ?? "")
               .join("\n");
+
+          // 🧹 Keep only valid links (with block/start/end)
+          final cleanLinks = links.where((l) =>
+            l.containsKey("block") &&
+            l.containsKey("start") &&
+            l.containsKey("end")
+          ).toList();
 
           final newNote = Note(
             title: titleController.text,
             description: description.isNotEmpty ? description : null,
             imagePaths: imagePaths,
-            contentBlocks: blocks.map((b) {
-              if (b['type'] == 'text') {
-                return {
-                  "type": "text",
-                  "content": b["content"] ?? "",
-                };
-              }
-              return b;
-            }).toList(),
-            links: links,
+            contentBlocks: contentBlocks,
+            links: cleanLinks.cast<Map<String, String>>(), // ✅ sanitized links
           );
 
           Navigator.pop(context, newNote);
@@ -495,9 +568,6 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
     );
   }
 }
-
-
-
 
 class NoteDetailScreen extends StatefulWidget {
   final Note note;
@@ -511,7 +581,12 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   late TextEditingController titleController;
   bool isEditingTitle = false;
   bool isEditingDescription = false;
+
   String? selectedText;
+  int? selectedBlockIndex;
+  int? selectedStart;
+  int? selectedEnd;
+
   List<Map<String, dynamic>> blocks = [];
 
   @override
@@ -519,49 +594,99 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     super.initState();
     titleController = TextEditingController(text: widget.note.title);
 
-    if (widget.note.contentBlocks != null &&
-        widget.note.contentBlocks!.isNotEmpty) {
-      // Deep copy
-      blocks = widget.note.contentBlocks!
+    // Load or fallback
+    if (widget.note.contentBlocks.isNotEmpty) {
+      blocks = widget.note.contentBlocks
           .map((b) => Map<String, dynamic>.from(b))
           .toList();
     } else {
       blocks = [
         {"type": "text", "content": widget.note.description ?? ""}
       ];
-      widget.note.contentBlocks = blocks;
+      widget.note.contentBlocks = blocks.cast<Map<String, String>>();
       widget.note.save();
     }
 
-    widget.note.links ??= {};
+    // Legacy map links → list of maps (kept as strings)
+    if (widget.note.links is Map) {
+      final oldLinks = (widget.note.links as Map).entries.map((e) {
+        return {
+          "id": const Uuid().v4(),
+          "text": e.key.toString(),
+          "noteId": e.value.toString(),
+        };
+      }).toList();
+      widget.note.links
+        ..clear()
+        ..addAll(oldLinks.cast<Map<String, String>>());
+    }
 
-    // attach controllers (not stored)
+    _attachControllers();
+  }
+
+  void _attachControllers() {
     for (final b in blocks) {
       if (b['type'] == 'text') {
         final c = TextEditingController(text: (b['content'] ?? '') as String);
+        final f = FocusNode();
+        b['controller'] = c;
+        b['focusNode'] = f;
+
+        f.addListener(() {
+          if (!f.hasFocus) {
+            // clear selection if focus leaves this field
+            setState(() {
+              if (selectedBlockIndex == blocks.indexOf(b)) {
+                selectedText = null;
+                selectedBlockIndex = null;
+                selectedStart = null;
+                selectedEnd = null;
+              }
+            });
+          }
+        });
+
         c.addListener(() {
           b['content'] = c.text;
-
-          // live update description
           widget.note.description = blocks
               .where((e) => e['type'] == 'text')
               .map((e) => (e['content'] ?? '') as String)
               .join("\n")
               .trim();
 
-          final sel = c.selection;
-          if (sel.start != sel.end &&
-              sel.start >= 0 &&
-              sel.end <= c.text.length) {
-            final s = c.text.substring(sel.start, sel.end);
-            if (s.trim().isNotEmpty) {
-              if (selectedText != s) setState(() => selectedText = s);
+          // While editing: track selection live
+          if (isEditingDescription && f.hasFocus) {
+            final sel = c.selection;
+            if (sel.start != sel.end &&
+                sel.start >= 0 &&
+                sel.end <= c.text.length) {
+              final s = c.text.substring(sel.start, sel.end);
+              if (s.trim().isNotEmpty) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  setState(() {
+                    selectedText = s;
+                    selectedBlockIndex = blocks.indexOf(b);
+                    selectedStart = sel.start;
+                    selectedEnd = sel.end;
+                  });
+                });
+              }
+            } else {
+              if (selectedText != null &&
+                  selectedBlockIndex == blocks.indexOf(b)) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  setState(() {
+                    selectedText = null;
+                    selectedStart = null;
+                    selectedEnd = null;
+                  });
+                });
+              }
             }
-          } else {
-            if (selectedText != null) setState(() => selectedText = null);
           }
         });
-        b['controller'] = c;
       }
     }
   }
@@ -569,26 +694,27 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   @override
   void dispose() {
     for (final b in blocks) {
-      if (b['type'] == 'text' && b['controller'] is TextEditingController) {
-        (b['controller'] as TextEditingController).dispose();
+      if (b['type'] == 'text') {
+        (b['controller'] as TextEditingController?)?.dispose();
+        (b['focusNode'] as FocusNode?)?.dispose();
       }
     }
     titleController.dispose();
     super.dispose();
   }
 
-  /// 🧹 Helper: sanitize before saving to Hive
-  List<Map<String, dynamic>> _sanitizeBlocks() {
+  List<Map<String, String>> _sanitizeBlocks() {
     return blocks.map((b) {
-      if (b['type'] == 'text') {
-        return {
-          'type': 'text',
-          'content': (b['controller'] != null)
-              ? (b['controller'] as TextEditingController).text
-              : (b['content'] ?? ''),
-        };
+      final type = (b['type'] ?? 'text').toString();
+      if (type == 'text') {
+        final txt = (b['controller'] is TextEditingController)
+            ? (b['controller'] as TextEditingController).text
+            : (b['content'] ?? '').toString();
+        return {"type": "text", "content": txt};
+      } else if (type == 'image') {
+        return {"type": "image", "path": (b['path'] ?? '').toString()};
       }
-      return b;
+      return {"type": "text", "content": ""};
     }).toList();
   }
 
@@ -603,37 +729,237 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     note.save();
   }
 
-  void _openFullScreen(File file) {
-    showGeneralDialog(
+  // ---------- Image insertion ----------
+  Future<bool> _requestPermissions() async {
+    final statuses = await [
+      Permission.camera,
+      Permission.photos,
+      Permission.storage,
+    ].request();
+    return statuses.values.every((s) => s.isGranted);
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    if (selectedBlockIndex == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Tap a text block first')),
+      );
+      return;
+    }
+
+    if (!await _requestPermissions()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Permission denied')),
+      );
+      return;
+    }
+
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(source: source);
+    if (pickedFile != null) {
+      setState(() {
+        final insertAt = selectedBlockIndex! + 1;
+        blocks.insert(insertAt, {"type": "image", "path": pickedFile.path});
+        blocks.insert(insertAt + 1, {
+          "type": "text",
+          "content": "",
+          "controller": TextEditingController(),
+          "focusNode": FocusNode(),
+        });
+      });
+      _safeSave(widget.note);
+    }
+  }
+
+  void _showImageOptions() {
+    if (selectedBlockIndex == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Tap a text block first')));
+      return;
+    }
+
+    showModalBottomSheet(
       context: context,
-      barrierDismissible: true,
-      barrierColor: Colors.black87,
-      pageBuilder: (_, __, ___) => GestureDetector(
-        onVerticalDragEnd: (_) => Navigator.pop(context),
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          body: Center(child: InteractiveViewer(child: Image.file(file))),
-        ),
+      backgroundColor: Colors.grey[900],
+      builder: (context) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(Icons.camera_alt, color: Colors.white54),
+            title:
+                const Text("Take Photo", style: TextStyle(color: Colors.white54)),
+            onTap: () {
+              Navigator.pop(context);
+              _pickImage(ImageSource.camera);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.photo, color: Colors.white54),
+            title: const Text("Choose from Gallery",
+                style: TextStyle(color: Colors.white54)),
+            onTap: () {
+              Navigator.pop(context);
+              _pickImage(ImageSource.gallery);
+            },
+          ),
+        ]),
       ),
     );
   }
 
-  Future<void> _showLinkOptions(String selected) async {
-    final notesBox = Hive.box<Note>('notesBox_v2');
-    final existingLink = widget.note.links[selected];
+  // ---------- Linking helpers ----------
+  // Trim leading/trailing spaces from a selection (so stored ranges match visible word)
+  (int, int) _normalizedRange(String text, int start, int end) {
+    int s = start, e = end;
+    while (s < e && text[s] == ' ') s++;
+    while (e > s && text[e - 1] == ' ') e--;
+    return (s, e);
+  }
 
-    return showModalBottomSheet(
+  // Render text with widgets at saved link ranges
+  List<InlineSpan> _buildDescriptionSpans(String text, int blockIndex) {
+    final spans = <InlineSpan>[];
+    int cursor = 0;
+
+    // Build safe ranges
+    final ranges = widget.note.links
+        .where((l) => l["block"] == blockIndex.toString())
+        .map((l) => {
+              ...l,
+              "startInt": int.tryParse(l["start"] ?? '') ?? -1,
+              "endInt": int.tryParse(l["end"] ?? '') ?? -1,
+            })
+        .where((l) {
+          final s = l["startInt"] as int;
+          final e = l["endInt"] as int;
+          return s >= 0 && e > s && e <= text.length;
+        })
+        .toList()
+      ..sort((a, b) =>
+          (a["startInt"] as int).compareTo(b["startInt"] as int));
+
+    for (final r in ranges) {
+      final rStart = r["startInt"] as int;
+      final rEnd = r["endInt"] as int;
+
+      // Skip overlaps / out-of-order
+      if (rStart < cursor) continue;
+
+      // Plain text before link
+      if (rStart > cursor) {
+        spans.add(TextSpan(
+          text: text.substring(cursor, rStart),
+          style: const TextStyle(color: Colors.white54),
+        ));
+      }
+
+      final slice = text.substring(rStart, rEnd);
+      final noteIdStr = (r["noteId"] ?? '').toString();
+      final linkId = (r["id"] ?? '').toString();
+
+      spans.add(
+        WidgetSpan(
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.alphabetic,
+          child: GestureDetector(
+            onTap: () {
+              final id = int.tryParse(noteIdStr);
+              if (id != null) {
+                final target = Hive.box<Note>('notesBox_v2').get(id);
+                if (target != null) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => NoteDetailScreen(note: target)),
+                  );
+                }
+              }
+            },
+            onLongPress: () async {
+              // Make sure unlink menu knows which exact range we're on
+              setState(() {
+                selectedText = slice;
+                selectedBlockIndex = blockIndex;
+                selectedStart = rStart;
+                selectedEnd = rEnd;
+              });
+              await _showLinkOptions(slice, presetLinkId: linkId);
+            },
+            child: Text(
+              slice,
+              style: const TextStyle(
+                color: Color(0xFF9B30FF),
+                decoration: TextDecoration.underline,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      cursor = rEnd;
+    }
+
+    // Trailing text
+    if (cursor < text.length) {
+      spans.add(TextSpan(
+        text: text.substring(cursor),
+        style: const TextStyle(color: Colors.white54),
+      ));
+    }
+
+    return spans;
+  }
+
+  Future<void> _showLinkOptions(String selected,
+      {String? presetLinkId}) async {
+    final notesBox = Hive.box<Note>('notesBox_v2');
+
+    if (selectedBlockIndex == null ||
+        selectedStart == null ||
+        selectedEnd == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Select text to link')));
+      return;
+    }
+
+    // Normalize selection against the actual text in that block
+    final b = blocks[selectedBlockIndex!];
+    final fullText =
+        (b['controller'] as TextEditingController?)?.text ??
+            (b['content'] ?? '') as String;
+    final (s, e) = _normalizedRange(fullText, selectedStart!, selectedEnd!);
+    final cleanSelected =
+        (s >= 0 && e <= fullText.length && e > s)
+            ? fullText.substring(s, e)
+            : selected;
+
+    // Detect existing link by exact range OR by preset id from long-press
+    int existingIndex = -1;
+    if (presetLinkId != null && presetLinkId.isNotEmpty) {
+      existingIndex =
+          widget.note.links.indexWhere((l) => l["id"] == presetLinkId);
+    }
+    if (existingIndex == -1) {
+      existingIndex = widget.note.links.indexWhere((l) =>
+          l["block"] == "$selectedBlockIndex" &&
+          l["start"] == "$s" &&
+          l["end"] == "$e");
+    }
+
+    final hasExisting = existingIndex != -1;
+    final existingLink = hasExisting ? widget.note.links[existingIndex] : null;
+
+    showModalBottomSheet(
       context: context,
       backgroundColor: Colors.grey[900],
       builder: (_) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          if (existingLink == null) ...[
+          if (!hasExisting) ...[
             ListTile(
               title: const Text("Link to existing note",
                   style: TextStyle(color: Colors.white54)),
               onTap: () {
                 Navigator.pop(context);
-                _pickNoteToLink(selected);
+                _pickNoteToLink(cleanSelected, s, e);
               },
             ),
             ListTile(
@@ -641,25 +967,28 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                   style: TextStyle(color: Colors.white54)),
               onTap: () async {
                 Navigator.pop(context);
-
-                // 🧹 sanitize before any save
                 _safeSave(widget.note);
 
                 final newNote = Note(
-                  title: selected,
+                  title: cleanSelected,
                   description: "",
                   contentBlocks: [
                     {"type": "text", "content": ""}
                   ],
-                  links: {},
+                  links: const [],
                 );
 
                 final key = await notesBox.add(newNote);
                 setState(() {
-                  widget.note.links[selected] = key;
+                  widget.note.links.add({
+                    "id": const Uuid().v4(),
+                    "text": cleanSelected,
+                    "noteId": key.toString(),
+                    "block": "$selectedBlockIndex",
+                    "start": "$s",
+                    "end": "$e",
+                  });
                 });
-
-                // save sanitized parent again
                 _safeSave(widget.note);
 
                 Navigator.push(
@@ -669,25 +998,25 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                 );
               },
             ),
-          ] else ...[
+          ] else
             ListTile(
               title: const Text("Unlink",
                   style: TextStyle(color: Colors.redAccent)),
               onTap: () {
                 Navigator.pop(context);
                 setState(() {
-                  widget.note.links.remove(selected);
+                  widget.note.links
+                      .removeWhere((l) => l["id"] == existingLink?["id"]);
                 });
                 _safeSave(widget.note);
               },
             ),
-          ]
         ]),
       ),
     );
   }
 
-  void _pickNoteToLink(String selected) {
+  void _pickNoteToLink(String selected, int s, int e) {
     final notesBox = Hive.box<Note>('notesBox_v2');
     final others =
         notesBox.values.where((n) => n.key != widget.note.key).toList();
@@ -703,13 +1032,20 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
               : ListView.builder(
                   shrinkWrap: true,
                   itemCount: others.length,
-                  itemBuilder: (context, i) {
+                  itemBuilder: (_, i) {
                     final n = others[i];
                     return ListTile(
                       title: Text(n.title),
                       onTap: () {
                         setState(() {
-                          widget.note.links[selected] = n.key as int;
+                          widget.note.links.add({
+                            "id": const Uuid().v4(),
+                            "text": selected,
+                            "noteId": n.key.toString(),
+                            "block": "$selectedBlockIndex",
+                            "start": "$s",
+                            "end": "$e",
+                          });
                         });
                         _safeSave(widget.note);
                         Navigator.pop(context);
@@ -722,77 +1058,38 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     );
   }
 
-  List<InlineSpan> _buildDescriptionSpans(String text) {
-    final spans = <InlineSpan>[];
-    int start = 0;
-    final occurrences = <MapEntry<int, String>>[];
+  // ---------- UI ----------
+  void _enterEditMode() {
+    setState(() {
+      isEditingDescription = true;
 
-    widget.note.links.forEach((snippet, _) {
-      if (snippet.isEmpty) return;
-      int from = 0;
-      while (true) {
-        final idx = text.indexOf(snippet, from);
-        if (idx == -1) break;
-        occurrences.add(MapEntry(idx, snippet));
-        from = idx + snippet.length;
+      // ensure there is at least one text block
+      int firstTextIndex =
+          blocks.indexWhere((b) => (b['type'] ?? 'text') == 'text');
+      if (firstTextIndex == -1) {
+        blocks.add({
+          "type": "text",
+          "content": "",
+          "controller": TextEditingController(),
+          "focusNode": FocusNode(),
+        });
+        firstTextIndex = blocks.length - 1;
+        // also reflect in note immediately
+        _safeSave(widget.note);
+      }
+
+      selectedBlockIndex = firstTextIndex;
+
+      // focus it so image button just works
+      final f = blocks[firstTextIndex]['focusNode'] as FocusNode?;
+      final c = blocks[firstTextIndex]['controller'] as TextEditingController?;
+      if (f != null) {
+        f.requestFocus();
+      }
+      if (c != null) {
+        c.selection = TextSelection.collapsed(offset: c.text.length);
       }
     });
-
-    occurrences.sort((a, b) => a.key.compareTo(b.key));
-
-    for (final occ in occurrences) {
-      final index = occ.key;
-      final snippet = occ.value;
-      if (index < start) continue;
-
-      if (index > start) {
-        spans.add(TextSpan(
-          text: text.substring(start, index),
-          style: const TextStyle(color: Colors.white54),
-        ));
-      }
-
-      final noteId = widget.note.links[snippet];
-      spans.add(
-        WidgetSpan(
-          alignment: PlaceholderAlignment.baseline,
-          baseline: TextBaseline.alphabetic,
-          child: GestureDetector(
-            onTap: () {
-              final target = Hive.box<Note>('notesBox_v2').get(noteId);
-              if (target != null) {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => NoteDetailScreen(note: target)),
-                );
-              }
-            },
-            onLongPress: () async => await _showLinkOptions(snippet),
-            child: Text(
-              snippet,
-              style: const TextStyle(
-                color: Color(0xFF9B30FF),
-                decoration: TextDecoration.underline,
-              ),
-            ),
-          ),
-        ),
-      );
-
-      start = index + snippet.length;
-    }
-
-    if (start < text.length) {
-      spans.add(TextSpan(
-        text: text.substring(start),
-        style: const TextStyle(color: Colors.white54),
-      ));
-    }
-
-    return spans.isEmpty
-        ? [TextSpan(text: text, style: const TextStyle(color: Colors.white54))]
-        : spans;
   }
 
   @override
@@ -816,56 +1113,80 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
             IconButton(
               icon: const Icon(Icons.link, color: Colors.white54),
               onPressed: () async => await _showLinkOptions(selectedText!),
+            )
+          else if (isEditingDescription)
+            IconButton(
+              icon: const Icon(Icons.image_outlined, color: Colors.white54),
+              onPressed: _showImageOptions,
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.edit, color: Colors.white54),
+              onPressed: _enterEditMode,
             ),
-          IconButton(
-            icon: Icon(isEditingDescription ? Icons.close : Icons.edit,
-                color: Colors.white54),
-            onPressed: () =>
-                setState(() => isEditingDescription = !isEditingDescription),
-          ),
         ],
       ),
       body: ListView.builder(
         padding: const EdgeInsets.all(16),
         itemCount: blocks.length,
-        itemBuilder: (context, index) {
-          final b = blocks[index];
-
+        itemBuilder: (context, i) {
+          final b = blocks[i];
           if (b['type'] == 'text') {
-            final c = b['controller'] as TextEditingController;
+            final c = b['controller'] as TextEditingController?;
+            final f = b['focusNode'] as FocusNode?;
+            // Safety: attach if missing (e.g., after hot restart)
+            if (c == null || f == null) {
+              final nc = TextEditingController(text: (b['content'] ?? '') as String);
+              final nf = FocusNode();
+              b['controller'] = nc;
+              b['focusNode'] = nf;
+              // keep listeners minimal; we won't re-wire full listeners here to avoid duplicates
+            }
+            final ctrl = (b['controller'] as TextEditingController);
+            final foc = (b['focusNode'] as FocusNode);
             return Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: isEditingDescription
                   ? TextField(
-                      controller: c,
+                      controller: ctrl,
+                      focusNode: foc,
                       maxLines: null,
                       style: const TextStyle(color: Colors.white54, fontSize: 16),
                       decoration: const InputDecoration(
                         border: InputBorder.none,
-                        hintText: "Description……",
+                        hintText: "Description…",
                         hintStyle: TextStyle(color: Colors.grey),
                       ),
+                      onTap: () => setState(() => selectedBlockIndex = i),
                     )
                   : SelectableText.rich(
-                      TextSpan(children: _buildDescriptionSpans(b['content'] ?? '')),
-                      style:
-                          const TextStyle(color: Colors.white54, fontSize: 16),
+                      TextSpan(
+                        children: _buildDescriptionSpans(b['content'] ?? '', i),
+                      ),
+                      style: const TextStyle(color: Colors.white54, fontSize: 16),
                       onSelectionChanged: (sel, cause) {
                         final text = (b['content'] ?? '') as String;
                         if (sel.start != sel.end &&
                             sel.start >= 0 &&
                             sel.end <= text.length) {
-                          final s = text.substring(sel.start, sel.end);
-                          setState(() => selectedText = s);
+                          final (s, e) = _normalizedRange(text, sel.start, sel.end);
+                          setState(() {
+                            selectedText = text.substring(s, e);
+                            selectedBlockIndex = i;
+                            selectedStart = s;
+                            selectedEnd = e;
+                          });
                         } else {
-                          setState(() => selectedText = null);
+                          setState(() {
+                            selectedText = null;
+                            selectedStart = null;
+                            selectedEnd = null;
+                          });
                         }
                       },
                     ),
             );
-          }
-
-          else if (b['type'] == 'image') {
+          } else if (b['type'] == 'image') {
             final file = File(b['path']);
             return Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -873,7 +1194,23 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                 alignment: Alignment.topRight,
                 children: [
                   GestureDetector(
-                    onTap: () => _openFullScreen(file),
+                    onTap: () {
+                      setState(() => selectedBlockIndex = i);
+                      showGeneralDialog(
+                        context: context,
+                        barrierDismissible: true,
+                        barrierColor: Colors.black87,
+                        pageBuilder: (_, __, ___) => GestureDetector(
+                          onVerticalDragEnd: (_) => Navigator.pop(context),
+                          child: Scaffold(
+                            backgroundColor: Colors.black,
+                            body: Center(
+                              child: InteractiveViewer(child: Image.file(file)),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(12),
                       child: Image.file(
@@ -885,10 +1222,10 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                   ),
                   if (isEditingDescription)
                     IconButton(
-                      icon: const Icon(Icons.close, color: Colors.red),
+                      icon: const Icon(Icons.close, color: Colors.red, size: 22),
                       onPressed: () {
                         setState(() {
-                          blocks.removeAt(index);
+                          blocks.removeAt(i);
                           _safeSave(widget.note);
                         });
                       },
@@ -897,17 +1234,21 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
               ),
             );
           }
-
           return const SizedBox.shrink();
         },
       ),
-
       floatingActionButton: FloatingActionButton(
         backgroundColor: const Color(0xFF4B0082),
         onPressed: () {
           widget.note.title = titleController.text;
           _safeSave(widget.note);
-          setState(() => isEditingDescription = false);
+          setState(() {
+            isEditingDescription = false;
+            selectedBlockIndex = null;
+            selectedStart = null;
+            selectedEnd = null;
+            selectedText = null;
+          });
           Navigator.pop(context, widget.note);
         },
         child: const Icon(Icons.check, color: Colors.white54),
@@ -915,5 +1256,10 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     );
   }
 }
+
+
+
+
+
 
 
