@@ -8,6 +8,19 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 part 'main.g.dart';
 
+const double kFontSize = 16.0;
+const TextStyle kBaseTextStyle = TextStyle(
+  color: Colors.white54,
+  fontSize: kFontSize,
+  height: 1.4,
+);
+const TextStyle kLinkTextStyle = TextStyle(
+  color: Color(0xFF9B30FF),
+  fontSize: kFontSize,
+  decoration: TextDecoration.underline,
+  height: 1.4,
+);
+
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,11 +36,13 @@ void main() async {
 }
 
 class MyApp extends StatelessWidget {
+  
   const MyApp({super.key});
-
+  
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       title: 'Flutter Demo',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
@@ -441,7 +456,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
           children: [
             TextField(
               controller: titleController,
-              style: const TextStyle(color: Colors.white54),
+              style: kBaseTextStyle,
               decoration: InputDecoration(
                 filled: true,
                 fillColor: Colors.grey[900],
@@ -489,7 +504,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                   padding: const EdgeInsets.only(bottom: 12),
                   child: TextField(
                     controller: c,
-                    style: const TextStyle(color: Colors.white54, fontSize: 16),
+                    style: kBaseTextStyle,
                     decoration: InputDecoration(
                       hintText: index == 0 ? "Description…" : "",
                       hintStyle: const TextStyle(color: Colors.grey),
@@ -1173,7 +1188,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
             ? TextField(
                 controller: titleController,
                 autofocus: true,
-                style: const TextStyle(color: Colors.white),
+                style: kBaseTextStyle,
                 onSubmitted: (_) {
                   setState(() {
                     isEditingTitle = false;
@@ -1223,7 +1238,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                       controller: ctrl,
                       focusNode: foc,
                       maxLines: null,
-                      style: const TextStyle(color: Colors.white54, fontSize: 16),
+                      style: kBaseTextStyle,
                       decoration: const InputDecoration(
                         border: InputBorder.none,
                         hintText: "Description…",
@@ -1312,16 +1327,19 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       floatingActionButton: FloatingActionButton(
         backgroundColor: const Color(0xFF4B0082),
         onPressed: () {
-          widget.note.title = titleController.text;
+          widget.note.title = titleController.text.trim();
           _safeSave(widget.note);
           setState(() {
+            isEditingTitle = false;
             isEditingDescription = false;
             selectedBlockIndex = null;
             selectedStart = null;
             selectedEnd = null;
             selectedText = null;
           });
-          Navigator.pop(context, widget.note);
+          if(Navigator.canPop(context)){
+            Navigator.pop(context, widget.note);
+          }
         },
         child: const Icon(Icons.check, color: Colors.white54),
       ),
