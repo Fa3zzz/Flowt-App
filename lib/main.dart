@@ -1336,31 +1336,13 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                     ),
             );
           } else if (b['type'] == 'image') {
-            final file = File(b['path']);
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Stack(
-                alignment: Alignment.topRight,
-                children: [
-                  GestureDetector(
-                    onTap: () {
-                      setState(() => selectedBlockIndex = i);
-                      showGeneralDialog(
-                        context: context,
-                        barrierDismissible: true,
-                        barrierColor: Colors.black87,
-                        pageBuilder: (_, __, ___) => GestureDetector(
-                          onVerticalDragEnd: (_) => Navigator.pop(context),
-                          child: Scaffold(
-                            backgroundColor: Colors.black,
-                            body: Center(
-                              child: InteractiveViewer(child: Image.file(file)),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                    child: ClipRRect(
+              final file = File(b['path']);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    ClipRRect(
                       borderRadius: BorderRadius.circular(12),
                       child: Image.file(
                         file,
@@ -1368,21 +1350,38 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                         fit: BoxFit.cover,
                       ),
                     ),
-                  ),
-                  if (isEditingDescription)
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.red, size: 22),
-                      onPressed: () {
-                        setState(() {
-                          blocks.removeAt(i);
-                          _safeSave(widget.note);
-                        });
-                      },
+
+                    // ❌ Delete icon — visible only in edit mode
+                    if (isEditingDescription)
+                      Positioned(
+                        top: 4,
+                        right: 36, // move left a bit to make space for fullscreen
+                        child: IconButton(
+                          icon: const Icon(Icons.close, color: Colors.red, size: 22),
+                          onPressed: () {
+                            setState(() {
+                              blocks.removeAt(i);
+                              _safeSave(widget.note);
+                            });
+                          },
+                        ),
+                      ),
+
+                    // 🔍 Fullscreen icon — always visible
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: IconButton(
+                        icon: const Icon(Icons.fullscreen, color: Colors.white70, size: 24),
+                        onPressed: () => _openFullScreenImage(file),
+                      ),
                     ),
-                ],
-              ),
-            );
-          }
+                  ],
+                ),
+              );
+            }
+
+
           return const SizedBox.shrink();
         },
       ),
@@ -1407,4 +1406,44 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       ),
     );
   }
+
+  void _openFullScreenImage(File file) {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Close fullscreen image', // ✅ fix for assertion error
+      barrierColor: Colors.black87,
+      pageBuilder: (_, __, ___) {
+        return Scaffold(
+          backgroundColor: Colors.black,
+          body: Stack(
+            children: [
+              // 🖼 Zoomable image
+              Center(
+                child: InteractiveViewer(
+                  panEnabled: true,
+                  minScale: 1.0,
+                  maxScale: 5.0,
+                  child: Image.file(file, fit: BoxFit.contain),
+                ),
+              ),
+              // 🔘 Exit fullscreen button
+              SafeArea(
+                child: Align(
+                  alignment: Alignment.topRight,
+                  child: IconButton(
+                    icon: const Icon(Icons.fullscreen_exit, color: Colors.white, size: 28),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+
+
 }
