@@ -203,6 +203,8 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
   final titleController = TextEditingController();
   final scrollController = ScrollController();
   final _uuid = const Uuid();
+  final titleFocus = FocusNode();
+
 
   // each block gets a stable id
   List<Map<String, dynamic>> blocks = [
@@ -221,7 +223,17 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
   String? selectedBlockId;
 
   @override
+  void initState() {
+    super.initState();
+
+    titleFocus.addListener(() {
+      setState(() {});
+    });
+  }
+
+  @override
   void dispose() {
+    titleFocus.dispose();
     titleController.dispose();
     for (final b in blocks) {
       if (b['type'] == 'text' && b['controller'] is TextEditingController) {
@@ -445,7 +457,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
               icon: const Icon(Icons.link, color: Colors.white54),
               onPressed: () async => await _showLinkOptions(selectedText!),
             )
-          else
+          else if (!titleFocus.hasFocus) // 👈 hide image button when typing title
             IconButton(
               icon: const Icon(Icons.image_outlined, color: Colors.white54),
               onPressed: _showImageOptions,
@@ -459,6 +471,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
           children: [
             TextField(
               controller: titleController,
+              focusNode: titleFocus,
               style: kBaseTextStyle,
               decoration: InputDecoration(
                 filled: true,
@@ -1355,7 +1368,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                     if (isEditingDescription)
                       Positioned(
                         top: 4,
-                        right: 36, // move left a bit to make space for fullscreen
+                        right: 4,
                         child: IconButton(
                           icon: const Icon(Icons.close, color: Colors.red, size: 22),
                           onPressed: () {
@@ -1367,21 +1380,20 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                         ),
                       ),
 
-                    // 🔍 Fullscreen icon — always visible
-                    Positioned(
-                      top: 4,
-                      right: 4,
-                      child: IconButton(
-                        icon: const Icon(Icons.fullscreen, color: Colors.white70, size: 24),
-                        onPressed: () => _openFullScreenImage(file),
+                    // 🔍 Fullscreen icon — visible only when NOT editing
+                    if (!isEditingDescription)
+                      Positioned(
+                        top: 4,
+                        right: 4,
+                        child: IconButton(
+                          icon: const Icon(Icons.fullscreen, color: Colors.white70, size: 24),
+                          onPressed: () => _openFullScreenImage(file),
+                        ),
                       ),
-                    ),
                   ],
                 ),
               );
             }
-
-
           return const SizedBox.shrink();
         },
       ),
@@ -1411,20 +1423,25 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     showGeneralDialog(
       context: context,
       barrierDismissible: true,
-      barrierLabel: 'Close fullscreen image', // ✅ fix for assertion error
+      barrierLabel: 'Close fullscreen image',
       barrierColor: Colors.black87,
       pageBuilder: (_, __, ___) {
         return Scaffold(
           backgroundColor: Colors.black,
           body: Stack(
+            clipBehavior: Clip.none,
             children: [
-              // 🖼 Zoomable image
-              Center(
-                child: InteractiveViewer(
-                  panEnabled: true,
-                  minScale: 1.0,
-                  maxScale: 5.0,
-                  child: Image.file(file, fit: BoxFit.contain),
+              // 🖼 Allow full zoom overflow
+              InteractiveViewer(
+                panEnabled: true,
+                minScale: 1.0,
+                maxScale: 5.0,
+                clipBehavior: Clip.none,
+                child: Center(
+                  child: FittedBox(
+                    fit: BoxFit.contain,
+                    child: Image.file(file),
+                  ),
                 ),
               ),
               // 🔘 Exit fullscreen button
@@ -1443,6 +1460,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       },
     );
   }
+
 
 
 
