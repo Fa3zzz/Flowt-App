@@ -6,9 +6,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:hive/hive.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
-part 'main.g.dart';
+import 'package:flutter/services.dart'; // ✅ this goes before the part
 
-import 'package:flutter/services.dart';
+part 'main.g.dart'; // ✅ this must be last
 
 
 const double kFontSize = 16.0;
@@ -777,42 +777,13 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
 
   // ---------- Image insertion ----------
-  Future<bool> _requestPermissions() async {
-    if (Platform.isIOS) {
-      // 🔹 iOS → Camera + Photos
-      var cam = await Permission.camera.status;
-      var photos = await Permission.photos.status;
-
-      if (!cam.isGranted) cam = await Permission.camera.request();
-      if (!photos.isGranted && !photos.isLimited) photos = await Permission.photos.request();
-
-      debugPrint('📸 iOS Camera: $cam');
-      debugPrint('🖼️ iOS Photos: $photos');
-
-      return cam.isGranted && (photos.isGranted || photos.isLimited);
-    } else if (Platform.isAndroid) {
-      // 🔹 Android → Camera + Storage (READ_MEDIA_IMAGES is handled by storage in plugin)
-      var cam = await Permission.camera.status;
-      var storage = await Permission.storage.status;
-
-      if (!cam.isGranted) cam = await Permission.camera.request();
-      if (!storage.isGranted) storage = await Permission.storage.request();
-
-      debugPrint('📸 Android Camera: $cam');
-      debugPrint('💾 Android Storage: $storage');
-
-      return cam.isGranted && storage.isGranted;
-    }
-
-    // 🧠 Other platforms
-    return true;
-  }
 
 
   Future<void> _pickImage(ImageSource source) async {
+    // ensure there's a text block target (same logic you had)
     if (selectedBlockIndex == null) {
       final idx = blocks.indexWhere((b) => (b['type'] ?? 'text') == 'text');
-      if(idx != -1) {
+      if (idx != -1) {
         setState(() => selectedBlockIndex = idx);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -822,30 +793,71 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       }
     }
 
-    if (!await _requestPermissions()) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Permission denied')),
-      );
-      return;
+    final picker = ImagePicker();
+
+    Future<XFile?> tryPick() async {
+      try {
+        return await picker.pickImage(source: source);
+      } on PlatformException catch (e) {
+        debugPrint('pickImage error: ${e.code} ${e.message}');
+        return null;
+      }
     }
 
-    final picker = ImagePicker();
-    final pickedFile = await picker.pickImage(source: source);
-    if (pickedFile != null) {
-      setState(() {
-        final insertAt = selectedBlockIndex! + 1;
-        blocks.insert(insertAt, {"type": "image", "path": pickedFile.path});
-        blocks.insert(insertAt + 1, {
-          "type": "text",
-          "content": "",
-          "controller": TextEditingController(),
-          "focusNode": FocusNode(),
-          "_wired": true, // this fresh block doesn't need listeners for selection
-        });
-      });
-      _safeSave(widget.note);
+    // 1) Try the picker first (lets iOS/Android drive permission flow)
+    XFile? picked = await tryPick();
+
+    // 2) If the picker couldn’t open/return a file, request minimal permission and retry once
+    if (picked == null) {
+      if (Platform.isIOS) {
+        if (source == ImageSource.camera) {
+          await Permission.camera.request();
+        } else {
+          // Limited access is fine for picking
+          await Permission.photos.request();
+        }
+      } else if (Platform.isAndroid) {
+        if (source == ImageSource.camera) {
+          await Permission.camera.request();
+        } else {
+          // On Android 13+ this usually isn’t required for picker, but request just in case
+          await Permission.storage.request();
+        }
+      }
+
+      picked = await tryPick();
+      if (picked == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Permission denied')),
+        );
+        return;
+      }
     }
+
+    // 3) Insert image + new text block (your existing behavior)
+    setState(() {
+      int insertAt;
+      if (selectedBlockIndex != null &&
+          selectedBlockIndex! >= 0 &&
+          selectedBlockIndex! < blocks.length) {
+        insertAt = selectedBlockIndex! + 1;
+      } else {
+        insertAt = blocks.length; // 👈 append at end if nothing selected
+      }
+
+      blocks.insert(insertAt, {"type": "image", "path": picked!.path});
+      blocks.insert(insertAt + 1, {
+        "type": "text",
+        "content": "",
+        "controller": TextEditingController(),
+        "focusNode": FocusNode(),
+        "_wired": true,
+      });
+    });
+
+    _safeSave(widget.note);
   }
+
 
   void _showImageOptions() {
   showModalBottomSheet(
