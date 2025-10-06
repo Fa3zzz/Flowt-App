@@ -103,9 +103,19 @@ class _NotesHomeState extends State<NotesHome> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        // backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         title: const Text("Flowt"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.search, color: Colors.white),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SearchNotesScreen()),
+              );
+            },
+          )
+        ],
       ),
       body: ValueListenableBuilder(
         valueListenable: notesBox.listenable(),
@@ -187,6 +197,160 @@ class _NotesHomeState extends State<NotesHome> {
           color: Colors.white54,
         )
       ),
+    );
+  }
+}
+
+class SearchNotesScreen extends StatefulWidget {
+  const SearchNotesScreen({super.key});
+
+  @override
+  State<SearchNotesScreen> createState() => _SearchNotesScreenState();
+}
+
+class _SearchNotesScreenState extends State<SearchNotesScreen> {
+  final TextEditingController searchController = TextEditingController();
+  List<Note> allNotes = [];
+  List<Map<String, dynamic>> results = [];
+
+  @override
+  void initState() {
+    super.initState();
+    final box = Hive.box<Note>('notesBox_v2');
+    allNotes = box.values.toList();
+  }
+
+  void _search(String query) {
+    final lower = query.toLowerCase();
+    final matches = <Map<String, dynamic>>[];
+
+    for (final note in allNotes) {
+      final title = note.title.toLowerCase();
+      final desc = note.description?.toLowerCase() ?? "";
+
+      if (title.contains(lower)) {
+        matches.add({
+          "note": note,
+          "matchType": "title",
+          "highlight": query,
+          "context": note.title,
+        });
+      } else if (desc.contains(lower)) {
+        // find a snippet containing the word
+        final idx = desc.indexOf(lower);
+        if (idx != -1) {
+          // capture sentence snippet around it
+          final full = note.description!;
+          int start = full.lastIndexOf('.', idx) + 1;
+          if (start < 0) start = 0;
+          int end = full.indexOf('.', idx);
+          if (end == -1) end = full.length;
+          final snippet = full.substring(start, end).trim();
+
+          matches.add({
+            "note": note,
+            "matchType": "description",
+            "highlight": query,
+            "context": snippet,
+          });
+        }
+      }
+    }
+
+    // Prioritize title matches, then by relevance
+    matches.sort((a, b) {
+      if (a["matchType"] == "title" && b["matchType"] != "title") return -1;
+      if (a["matchType"] != "title" && b["matchType"] == "title") return 1;
+      return a["context"].toString().compareTo(b["context"].toString());
+    });
+
+    setState(() => results = matches);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: TextField(
+          controller: searchController,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: "Search notes...",
+            hintStyle: TextStyle(color: Colors.white54),
+            border: InputBorder.none,
+          ),
+          onChanged: _search,
+        ),
+      ),
+      body: results.isEmpty
+          ? const Center(
+              child: Text(
+                "No matches found",
+                style: TextStyle(color: Colors.white54),
+              ),
+            )
+          : ListView.builder(
+              itemCount: results.length,
+              itemBuilder: (_, i) {
+                final match = results[i];
+                final note = match["note"] as Note;
+                final highlight = match["highlight"] as String;
+                final contextText = match["context"] as String;
+
+                // build highlight span
+                final lower = contextText.toLowerCase();
+                final idx = lower.indexOf(highlight.toLowerCase());
+
+                InlineSpan textSpan;
+                if (idx != -1) {
+                  textSpan = TextSpan(children: [
+                    TextSpan(
+                        text: contextText.substring(0, idx),
+                        style: const TextStyle(color: Colors.white54)),
+                    TextSpan(
+                        text: contextText.substring(idx, idx + highlight.length),
+                        style: const TextStyle(
+                            color: Color(0xFF9B30FF),
+                            fontWeight: FontWeight.bold)),
+                    TextSpan(
+                        text: contextText.substring(idx + highlight.length),
+                        style: const TextStyle(color: Colors.white54)),
+                  ]);
+                } else {
+                  textSpan = TextSpan(
+                      text: contextText,
+                      style: const TextStyle(color: Colors.white54));
+                }
+
+                return Card(
+                  color: Colors.grey[900],
+                  margin:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  child: ListTile(
+                    title: Text(
+                      note.title,
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: RichText(text: textSpan),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => NoteDetailScreen(
+                            note: note,
+                            highlightQuery: highlight,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
     );
   }
 }
@@ -604,7 +768,8 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
 
 class NoteDetailScreen extends StatefulWidget {
   final Note note;
-  const NoteDetailScreen({super.key, required this.note});
+  final String? highlightQuery;
+  const NoteDetailScreen({super.key, required this.note, this.highlightQuery});
 
   @override
   State<NoteDetailScreen> createState() => _NoteDetailScreenState();
@@ -614,6 +779,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   late TextEditingController titleController;
   bool isEditingTitle = false;
   bool isEditingDescription = false;
+  String? highlightQuery;
 
   String? selectedText;
   int? selectedBlockIndex;
@@ -626,6 +792,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   void initState() {
     super.initState();
     titleController = TextEditingController(text: widget.note.title);
+    highlightQuery = widget.highlightQuery?.toLowerCase();
 
     // Load or fallback
     if (widget.note.contentBlocks.isNotEmpty) {
@@ -656,6 +823,18 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     }
 
     _attachControllers();
+
+    if (highlightQuery != null && highlightQuery!.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final scrollable = Scrollable.of(context);
+        scrollable?.position.animateTo(
+          200, // tweak offset to match first match
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOut,
+        );
+      });
+    }
+
   }
 
   void _wireTextBlock(Map<String, dynamic> b) {
@@ -955,18 +1134,49 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   List<InlineSpan> _buildDescriptionSpans(String text, int blockIndex) {
     final spans = <InlineSpan>[];
     int cursor = 0;
+    final lower = text.toLowerCase();
+    final query = highlightQuery?.toLowerCase() ?? '';
 
     final ranges = _rangesForBlock(text, blockIndex);
+
+    void addNormalSpan(String chunk) {
+      if (query.isNotEmpty && chunk.toLowerCase().contains(query)) {
+        int start = 0, idx;
+        while ((idx = chunk.toLowerCase().indexOf(query, start)) != -1) {
+          if (idx > start) {
+            spans.add(TextSpan(
+                text: chunk.substring(start, idx),
+                style: const TextStyle(color: Colors.white54, fontSize: 16)));
+          }
+          spans.add(TextSpan(
+            text: chunk.substring(idx, idx + query.length),
+            style: const TextStyle(
+              color: Color(0xFF9B30FF),
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
+            ),
+          ));
+          start = idx + query.length;
+        }
+        if (start < chunk.length) {
+          spans.add(TextSpan(
+              text: chunk.substring(start),
+              style: const TextStyle(color: Colors.white54, fontSize: 16)));
+        }
+      } else {
+        spans.add(TextSpan(
+          text: chunk,
+          style: const TextStyle(color: Colors.white54, fontSize: 16),
+        ));
+      }
+    }
 
     for (final r in ranges) {
       final rStart = r["startInt"] as int;
       final rEnd = r["endInt"] as int;
 
       if (rStart > cursor) {
-        spans.add(TextSpan(
-          text: text.substring(cursor, rStart),
-          style: const TextStyle(color: Colors.white54, fontSize: 16),
-        ));
+        addNormalSpan(text.substring(cursor, rStart));
       }
 
       final slice = text.substring(rStart, rEnd);
@@ -1007,8 +1217,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
               style: const TextStyle(
                 color: Color(0xFF9B30FF),
                 decoration: TextDecoration.underline,
-                fontSize: 16, // match base text size
-                height: 1.3, // adjust baseline alignment
+                fontSize: 16,
+                height: 1.3,
               ),
             ),
           ),
@@ -1019,14 +1229,12 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     }
 
     if (cursor < text.length) {
-      spans.add(TextSpan(
-        text: text.substring(cursor),
-        style: const TextStyle(color: Colors.white54, fontSize: 16),
-      ));
+      addNormalSpan(text.substring(cursor));
     }
 
     return spans;
   }
+
 
 
 
@@ -1162,12 +1370,6 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     );
   }
 
-
-
-
-
-
-
   void _pickNoteToLink(String selected, int s, int e) {
     final notesBox = Hive.box<Note>('notesBox_v2');
     final others =
@@ -1213,6 +1415,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   // ---------- UI ----------
   void _enterEditMode() {
     setState(() {
+      highlightQuery = null;
       isEditingDescription = true;
 
       int firstTextIndex = blocks.indexWhere((b) => (b['type'] ?? 'text') == 'text');
@@ -1273,7 +1476,12 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                 },
               )
             : GestureDetector(
-                onTap: () => setState(() => isEditingTitle = true),
+                onTap: () {
+                  setState(() {
+                    isEditingTitle = true;
+                    highlightQuery = null;
+                  });
+                },
                 child: Text(widget.note.title),
               ),
         actions: [
@@ -1461,7 +1669,34 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     );
   }
 
+  List<InlineSpan> _buildHighlightedSpans(String text) {
+    if (highlightQuery == null || highlightQuery!.isEmpty) {
+      return [TextSpan(text: text, style: kBaseTextStyle)];
+    }
+    final lower = text.toLowerCase();
+    final query = highlightQuery!;
+    final spans = <InlineSpan>[];
+    int start = 0;
+    int idx;
 
+    while ((idx = lower.indexOf(query, start)) != -1) {
+      if (idx > start) {
+        spans.add(TextSpan(
+            text: text.substring(start, idx), style: kBaseTextStyle));
+      }
+      spans.add(TextSpan(
+        text: text.substring(idx, idx + query.length),
+        style: const TextStyle(
+          color: Color(0xFF9B30FF),
+          fontWeight: FontWeight.bold,
+        ),
+      ));
+      start = idx + query.length;
+    }
 
-
+    if (start < text.length) {
+      spans.add(TextSpan(text: text.substring(start), style: kBaseTextStyle));
+    }
+    return spans;
+  }
 }
