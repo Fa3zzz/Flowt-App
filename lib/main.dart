@@ -658,8 +658,13 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     b['_wired'] = true;
 
     f.addListener(() {
-      if (!f.hasFocus) {
-        // clear selection if focus leaves this field
+      if (f.hasFocus) {
+        // 🔹 Update the active block when user focuses/taps inside it
+        setState(() {
+          selectedBlockIndex = blocks.indexOf(b);
+        });
+      } else {
+        // 🔹 Clear selection only if user leaves this block
         setState(() {
           if (selectedBlockIndex == blocks.indexOf(b)) {
             selectedText = null;
@@ -670,6 +675,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
         });
       }
     });
+
 
     c.addListener(() {
       b['content'] = c.text;
