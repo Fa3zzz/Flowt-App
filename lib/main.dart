@@ -8,6 +8,9 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 part 'main.g.dart';
 
+import 'package:flutter/services.dart';
+
+
 const double kFontSize = 16.0;
 const TextStyle kBaseTextStyle = TextStyle(
   color: Colors.white54,
@@ -30,7 +33,7 @@ void main() async {
   await Hive.openBox<Note>('notesBox_v2');
 
   final notesBox = Hive.box<Note>('notesBox_v2');
-  await notesBox.clear();
+  // await notesBox.clear();
 
   runApp(const MyApp());
 }
@@ -79,7 +82,7 @@ class Note extends HiveObject {
     List<Map<String, String>>? links,
     this.imagePaths = const [],
     List<Map<String, String>>? contentBlocks,
-  })  : links = links ?? [],
+  })  : links = List<Map<String, String>>.from(links ?? []),
         contentBlocks = contentBlocks ?? [];
 }
 
@@ -775,20 +778,48 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
   // ---------- Image insertion ----------
   Future<bool> _requestPermissions() async {
-    final statuses = await [
-      Permission.camera,
-      Permission.photos,
-      Permission.storage,
-    ].request();
-    return statuses.values.every((s) => s.isGranted);
+    if (Platform.isIOS) {
+      // 🔹 iOS → Camera + Photos
+      var cam = await Permission.camera.status;
+      var photos = await Permission.photos.status;
+
+      if (!cam.isGranted) cam = await Permission.camera.request();
+      if (!photos.isGranted && !photos.isLimited) photos = await Permission.photos.request();
+
+      debugPrint('📸 iOS Camera: $cam');
+      debugPrint('🖼️ iOS Photos: $photos');
+
+      return cam.isGranted && (photos.isGranted || photos.isLimited);
+    } else if (Platform.isAndroid) {
+      // 🔹 Android → Camera + Storage (READ_MEDIA_IMAGES is handled by storage in plugin)
+      var cam = await Permission.camera.status;
+      var storage = await Permission.storage.status;
+
+      if (!cam.isGranted) cam = await Permission.camera.request();
+      if (!storage.isGranted) storage = await Permission.storage.request();
+
+      debugPrint('📸 Android Camera: $cam');
+      debugPrint('💾 Android Storage: $storage');
+
+      return cam.isGranted && storage.isGranted;
+    }
+
+    // 🧠 Other platforms
+    return true;
   }
+
 
   Future<void> _pickImage(ImageSource source) async {
     if (selectedBlockIndex == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Tap a text block first')),
-      );
-      return;
+      final idx = blocks.indexWhere((b) => (b['type'] ?? 'text') == 'text');
+      if(idx != -1) {
+        setState(() => selectedBlockIndex = idx);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No text box available to attach image.')),
+        );
+        return;
+      }
     }
 
     if (!await _requestPermissions()) {
@@ -817,21 +848,19 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   }
 
   void _showImageOptions() {
-    if (selectedBlockIndex == null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Tap a text block first')));
-      return;
-    }
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.grey[900],
-      builder: (context) => SafeArea(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: Colors.grey[900],
+    builder: (context) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
           ListTile(
             leading: const Icon(Icons.camera_alt, color: Colors.white54),
-            title:
-                const Text("Take Photo", style: TextStyle(color: Colors.white54)),
+            title: const Text(
+              "Take Photo",
+              style: TextStyle(color: Colors.white54),
+            ),
             onTap: () {
               Navigator.pop(context);
               _pickImage(ImageSource.camera);
@@ -839,17 +868,21 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
           ),
           ListTile(
             leading: const Icon(Icons.photo, color: Colors.white54),
-            title: const Text("Choose from Gallery",
-                style: TextStyle(color: Colors.white54)),
+            title: const Text(
+              "Choose from Gallery",
+              style: TextStyle(color: Colors.white54),
+            ),
             onTap: () {
               Navigator.pop(context);
               _pickImage(ImageSource.gallery);
             },
           ),
-        ]),
+        ],
       ),
-    );
-  }
+    ),
+  );
+}
+
 
   // ---------- Linking helpers ----------
   (int, int) _normalizedRange(String text, int start, int end) {
@@ -1151,33 +1184,44 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     setState(() {
       isEditingDescription = true;
 
-      // ensure there is at least one text block
-      int firstTextIndex =
-          blocks.indexWhere((b) => (b['type'] ?? 'text') == 'text');
+      int firstTextIndex = blocks.indexWhere((b) => (b['type'] ?? 'text') == 'text');
       if (firstTextIndex == -1) {
         final nb = {
           "type": "text",
           "content": "",
+          "controller": TextEditingController(),
+          "focusNode": FocusNode(),
         };
-        blocks.add(nb);
         _wireTextBlock(nb);
+        blocks.add(nb);
         firstTextIndex = blocks.length - 1;
         _safeSave(widget.note);
       } else {
-        // make sure wired (hot restart safety)
         _wireTextBlock(blocks[firstTextIndex]);
       }
 
+      // ✅ Always select the first text block
       selectedBlockIndex = firstTextIndex;
 
+      // ✅ Explicitly set focus and selection
       final f = blocks[firstTextIndex]['focusNode'] as FocusNode?;
       final c = blocks[firstTextIndex]['controller'] as TextEditingController?;
       f?.requestFocus();
-      if (c != null) {
-        c.selection = TextSelection.collapsed(offset: c.text.length);
-      }
+      c?.selection = TextSelection.collapsed(offset: c.text.length);
+    });
+
+    // ✅ Also schedule a post-frame safety check
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (selectedBlockIndex == null && blocks.isNotEmpty) {
+          final fallback = blocks.indexWhere((b) => b['type'] == 'text');
+          if (fallback != -1) {
+            setState(() => selectedBlockIndex = fallback);
+          }
+        }
     });
   }
+
+
 
   @override
   Widget build(BuildContext context) {

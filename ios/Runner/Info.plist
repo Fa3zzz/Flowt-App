@@ -46,12 +46,14 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 
+	<!-- ✅ Only one set of usage descriptions -->
 	<key>NSCameraUsageDescription</key>
-	<string>We need camera access to take photos for your notes.</string>
+	<string>This app needs camera access to take photos.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>We need photo library access to pick images for your notes.</string>
+	<string>This app needs access to your photo library to pick images.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>We need photo library access to save images.</string>
+	<string>This app needs permission to save photos.</string>
+
 
 </dict>
 </plist>
