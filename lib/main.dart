@@ -564,7 +564,21 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
   void _pickNoteToLink(String selected, int s, int e) {
     final notesBox = Hive.box<Note>('notesBox_v2');
     final others = notesBox.values.toList();
-    final blockId = selectedBlockId ?? (blocks[selectedBlockIndex!]["id"] ??= _uuid.v4()).toString();
+
+    // 🛡️ Guard: ensure selection context exists
+    if (selectedBlockIndex == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a text block before linking')),
+      );
+      return;
+    }
+
+    // 🧠 Get safe block + persistent id
+    final b = blocks[selectedBlockIndex!];
+    if (b['id'] == null || (b['id'] as String).isEmpty) {
+      b['id'] = const Uuid().v4();
+    }
+    final blockId = b['id'].toString();
 
     showDialog(
       context: context,
@@ -582,15 +596,9 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                     return ListTile(
                       title: Text(n.title),
                       onTap: () {
-                        if (selectedBlockIndex == null) {
-                          Navigator.pop(context);
-                          ScaffoldMessenger.of(context)
-                              .showSnackBar(const SnackBar(content: Text('Select text to link')));
-                          return;
-                        }
                         setState(() {
                           links.add({
-                            "id": _uuid.v4(),
+                            "id": const Uuid().v4(),
                             "text": selected,
                             "noteId": n.key.toString(),
                             "block": blockId,
@@ -599,6 +607,13 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                           });
                         });
                         Navigator.pop(context);
+
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Linked to "${n.title}"'),
+                            duration: const Duration(seconds: 1),
+                          ),
+                        );
                       },
                     );
                   },
@@ -607,6 +622,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
       ),
     );
   }
+
 
   // ---------- UI ----------
   @override
@@ -731,8 +747,13 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
               .toList();
 
           final contentBlocks = blocks.map<Map<String, String>>((b) {
-            final id = (b['id'] ??= _uuid.v4()).toString();
-            final type = (b['type'] ?? '').toString();
+            // 🔹 Always preserve or assign a persistent ID
+            if (b['id'] == null || (b['id'] as String).isEmpty) {
+              b['id'] = _uuid.v4();
+            }
+            final id = b['id'].toString();
+            final type = (b['type'] ?? 'text').toString();
+
             if (type == 'text') {
               return {"id": id, "type": "text", "content": (b["content"] ?? "").toString()};
             } else if (type == 'image') {
@@ -740,7 +761,6 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
             }
             return {"id": id, "type": "text", "content": ""};
           }).toList();
-
           final description = contentBlocks
               .where((b) => b["type"] == "text")
               .map((b) => b["content"] ?? "")
@@ -780,6 +800,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   bool isEditingTitle = false;
   bool isEditingDescription = false;
   String? highlightQuery;
+  double highlightOpacity = 1.0;
+  String? _lastBlockIdForLink;
 
   String? selectedText;
   int? selectedBlockIndex;
@@ -794,6 +816,25 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     titleController = TextEditingController(text: widget.note.title);
     highlightQuery = widget.highlightQuery?.toLowerCase();
 
+    // 👇 Handle fade + scroll only once
+    if (highlightQuery != null && highlightQuery!.isNotEmpty) {
+      // Scroll to first match
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final scrollable = Scrollable.of(context);
+        scrollable?.position.animateTo(
+          200,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOut,
+        );
+      });
+
+      // ✅ Only fade highlight color (not remove query)
+      Future.delayed(const Duration(seconds: 5), () {
+        if (!mounted) return;
+        setState(() => highlightOpacity = 0.0);
+      });
+    }
+
     // Load or fallback
     if (widget.note.contentBlocks.isNotEmpty) {
       blocks = widget.note.contentBlocks
@@ -807,7 +848,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       widget.note.save();
     }
 
-    // Legacy map links → list of maps (kept as strings)
+    // Legacy map links → list of maps
     if (widget.note.links is Map) {
       final oldLinks = (widget.note.links as Map).entries.map((e) {
         return {
@@ -823,19 +864,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     }
 
     _attachControllers();
-
-    if (highlightQuery != null && highlightQuery!.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        final scrollable = Scrollable.of(context);
-        scrollable?.position.animateTo(
-          200, // tweak offset to match first match
-          duration: const Duration(milliseconds: 500),
-          curve: Curves.easeOut,
-        );
-      });
-    }
-
   }
+
 
   void _wireTextBlock(Map<String, dynamic> b) {
     if (b['_wired'] == true) return;
@@ -868,7 +898,6 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       }
     });
 
-
     c.addListener(() {
       b['content'] = c.text;
       widget.note.description = blocks
@@ -876,36 +905,33 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
           .map((e) => (e['content'] ?? '') as String)
           .join("\n");
 
-      // Track selection live
-      if (isEditingDescription && f.hasFocus) {
+      // 🎯 Track selection live without flicker
+      if (f.hasFocus) {
         final sel = c.selection;
         if (sel.start != sel.end &&
             sel.start >= 0 &&
             sel.end <= c.text.length) {
           final (s, e) = _normalizedRange(c.text, sel.start, sel.end);
-          if (e > s) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              setState(() {
-                selectedText = c.text.substring(s, e);
-                selectedBlockIndex = blocks.indexOf(b);
-                selectedStart = s;
-                selectedEnd = e;
-              });
+          if (s < 0 || e > c.text.length || s >= e) return; // 🛑 guard
+          if (!mounted) return;
+
+          if (selectedStart != s || selectedEnd != e) {
+            setState(() {
+              selectedText = c.text.substring(s, e);
+              selectedBlockIndex = blocks.indexOf(b);
+              selectedStart = s;
+              selectedEnd = e;
+              _lastBlockIdForLink = b['id']?.toString();
             });
           }
-        } else {
-          if (selectedText != null &&
-              selectedBlockIndex == blocks.indexOf(b)) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              setState(() {
-                selectedText = null;
-                selectedStart = null;
-                selectedEnd = null;
-              });
-            });
-          }
+        } else if (selectedText != null &&
+            selectedBlockIndex == blocks.indexOf(b)) {
+          if (!mounted) return;
+          setState(() {
+            selectedText = null;
+            selectedStart = null;
+            selectedEnd = null;
+          });
         }
       }
     });
@@ -936,6 +962,9 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   List<Map<String, String>> _sanitizeBlocks() {
     return blocks.map((b) {
       final type = (b['type'] ?? 'text').toString();
+      if (b['id'] == null || (b['id'] as String).isEmpty) {
+        b['id'] = const Uuid().v4();
+      }
       final id = b['id']?.toString() ?? const Uuid().v4();
 
       if (type == 'text') {
@@ -1145,13 +1174,15 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
         while ((idx = chunk.toLowerCase().indexOf(query, start)) != -1) {
           if (idx > start) {
             spans.add(TextSpan(
-                text: chunk.substring(start, idx),
-                style: const TextStyle(color: Colors.white54, fontSize: 16)));
+              text: chunk.substring(start, idx),
+              style: const TextStyle(color: Colors.white54, fontSize: 16),
+            ));
           }
+          // 👇 Highlight color fades out using highlightOpacity
           spans.add(TextSpan(
             text: chunk.substring(idx, idx + query.length),
-            style: const TextStyle(
-              color: Color(0xFF9B30FF),
+            style: TextStyle(
+              color: const Color(0xFF9B30FF).withOpacity(highlightOpacity),
               fontWeight: FontWeight.bold,
               fontSize: 16,
             ),
@@ -1160,8 +1191,9 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
         }
         if (start < chunk.length) {
           spans.add(TextSpan(
-              text: chunk.substring(start),
-              style: const TextStyle(color: Colors.white54, fontSize: 16)));
+            text: chunk.substring(start),
+            style: const TextStyle(color: Colors.white54, fontSize: 16),
+          ));
         }
       } else {
         spans.add(TextSpan(
@@ -1238,6 +1270,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
 
 
+
   Future<void> _showLinkOptions(String selected, {String? presetLinkId}) async {
     if (selectedBlockIndex == null || selectedStart == null || selectedEnd == null) {
       ScaffoldMessenger.of(context) 
@@ -1259,6 +1292,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
     final cleanSelected = fullText.substring(ns, ne);
     final blockId = b['id']?.toString() ?? selectedBlockIndex.toString();
+    _lastBlockIdForLink = blockId;
 
     // ✅ Allow adjacency — reject only *true* overlaps
     final existingBlockRanges = _rangesForBlock(fullText, selectedBlockIndex!);
@@ -1372,8 +1406,27 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
   void _pickNoteToLink(String selected, int s, int e) {
     final notesBox = Hive.box<Note>('notesBox_v2');
-    final others =
-        notesBox.values.where((n) => n.key != widget.note.key).toList();
+    final others = notesBox.values.where((n) => n.key != widget.note.key).toList();
+
+    // ✅ Resolve the right block robustly (index OR cached id)
+    int? idx = selectedBlockIndex;
+    if (idx == null || idx < 0 || idx >= blocks.length) {
+      if (_lastBlockIdForLink != null && _lastBlockIdForLink!.isNotEmpty) {
+        idx = blocks.indexWhere((bb) => (bb['id']?.toString() ?? '') == _lastBlockIdForLink);
+      }
+    }
+
+    // Still not found? Bail gracefully (don’t crash)
+    if (idx == null || idx == -1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select text to link')),
+      );
+      return;
+    }
+
+    final b = blocks[idx];
+    b['id'] ??= const Uuid().v4();
+    final blockId = b['id'].toString();
 
     showDialog(
       context: context,
@@ -1396,13 +1449,28 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                             "id": const Uuid().v4(),
                             "text": selected,
                             "noteId": n.key.toString(),
-                            "block": "$selectedBlockIndex",
+                            "block": blockId,
                             "start": "$s",
                             "end": "$e",
                           });
+
+                          // keep block content in sync for persistence
+                          b['content'] =
+                              (b['controller'] as TextEditingController?)?.text ??
+                              (b['content'] ?? '');
+
+                          widget.note.contentBlocks = _sanitizeBlocks();
+                          _safeSave(widget.note);
                         });
-                        _safeSave(widget.note);
+
                         Navigator.pop(context);
+
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Linked to "${n.title}"'),
+                            duration: const Duration(seconds: 1),
+                          ),
+                        );
                       },
                     );
                   },
@@ -1411,6 +1479,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       ),
     );
   }
+
 
   // ---------- UI ----------
   void _enterEditMode() {
@@ -1457,94 +1526,102 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
 
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        title: isEditingTitle
-            ? TextField(
-                controller: titleController,
-                autofocus: true,
-                style: kBaseTextStyle,
-                onSubmitted: (_) {
-                  setState(() {
-                    isEditingTitle = false;
-                    widget.note.title = titleController.text;
-                    widget.note.save();
-                  });
-                },
-              )
-            : GestureDetector(
-                onTap: () {
-                  setState(() {
-                    isEditingTitle = true;
-                    highlightQuery = null;
-                  });
-                },
-                child: Text(widget.note.title),
-              ),
-        actions: [
-          if (selectedText != null)
-            IconButton(
-              icon: const Icon(Icons.link, color: Colors.white54),
-              onPressed: () async => await _showLinkOptions(selectedText!),
+@override
+Widget build(BuildContext context) {
+  return Scaffold(
+    backgroundColor: Colors.black,
+    appBar: AppBar(
+      title: isEditingTitle
+          ? TextField(
+              controller: titleController,
+              autofocus: true,
+              style: kBaseTextStyle,
+              onSubmitted: (_) {
+                setState(() {
+                  isEditingTitle = false;
+                  widget.note.title = titleController.text;
+                  widget.note.save();
+                });
+              },
             )
-          else if (isEditingDescription)
-            IconButton(
-              icon: const Icon(Icons.image_outlined, color: Colors.white54),
-              onPressed: _showImageOptions,
-            )
-          else
-            IconButton(
-              icon: const Icon(Icons.edit, color: Colors.white54),
-              onPressed: _enterEditMode,
+          : GestureDetector(
+              onTap: () {
+                setState(() {
+                  isEditingTitle = true;
+                  highlightQuery = null;
+                });
+              },
+              child: Text(widget.note.title),
             ),
-        ],
-      ),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: blocks.length,
-        itemBuilder: (context, i) {
-          final b = blocks[i];
-          if (b['type'] == 'text') {
-            // Safety: ensure controller/focus/listeners exist
-            if (!(b['_wired'] == true)) {
-              _wireTextBlock(b);
-            }
-            final ctrl = (b['controller'] as TextEditingController);
-            final foc = (b['focusNode'] as FocusNode);
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: isEditingDescription
-                  ? TextField(
-                      controller: ctrl,
-                      focusNode: foc,
-                      maxLines: null,
-                      style: kBaseTextStyle,
-                      decoration: const InputDecoration(
-                        border: InputBorder.none,
-                        hintText: "Description…",
-                        hintStyle: TextStyle(color: Colors.grey),
-                      ),
-                      onTap: () => setState(() => selectedBlockIndex = i),
-                    )
-                  : SelectableText.rich(
+      actions: [
+        if (selectedText != null)
+          IconButton(
+            icon: const Icon(Icons.link, color: Colors.white54),
+            onPressed: () async => await _showLinkOptions(selectedText!),
+          )
+        else if (isEditingDescription)
+          IconButton(
+            icon: const Icon(Icons.image_outlined, color: Colors.white54),
+            onPressed: _showImageOptions,
+          )
+        else
+          IconButton(
+            icon: const Icon(Icons.edit, color: Colors.white54),
+            onPressed: _enterEditMode,
+          ),
+      ],
+    ),
+    body: ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: blocks.length,
+      itemBuilder: (context, i) {
+        final b = blocks[i];
+        if (b['type'] == 'text') {
+          // Safety: ensure controller/focus/listeners exist
+          if (!(b['_wired'] == true)) {
+            _wireTextBlock(b);
+          }
+          final ctrl = (b['controller'] as TextEditingController);
+          final foc = (b['focusNode'] as FocusNode);
+
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: isEditingDescription
+                ? TextField(
+                    controller: ctrl,
+                    focusNode: foc,
+                    maxLines: null,
+                    style: kBaseTextStyle,
+                    decoration: const InputDecoration(
+                      border: InputBorder.none,
+                      hintText: "Description…",
+                      hintStyle: TextStyle(color: Colors.grey),
+                    ),
+                    onTap: () => setState(() => selectedBlockIndex = i),
+                  )
+                : AnimatedOpacity(
+                    opacity: highlightOpacity,
+                    duration: const Duration(seconds: 1),
+                    child: SelectableText.rich(
                       TextSpan(
-                        children: _buildDescriptionSpans(b['content'] ?? '', i),
+                        children:
+                            _buildDescriptionSpans(b['content'] ?? '', i),
                       ),
-                      style: const TextStyle(color: Colors.white54, fontSize: 16),
+                      style: const TextStyle(
+                          color: Colors.white54, fontSize: 16),
                       onSelectionChanged: (sel, cause) {
                         final text = (b['content'] ?? '') as String;
                         if (sel.start != sel.end &&
                             sel.start >= 0 &&
                             sel.end <= text.length) {
-                          final (s, e) = _normalizedRange(text, sel.start, sel.end);
+                          final (s, e) =
+                              _normalizedRange(text, sel.start, sel.end);
                           setState(() {
                             selectedText = text.substring(s, e);
                             selectedBlockIndex = i;
                             selectedStart = s;
                             selectedEnd = e;
+                            _lastBlockIdForLink = (b['id']?.toString() ?? '');
                           });
                         } else {
                           setState(() {
@@ -1555,77 +1632,81 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                         }
                       },
                     ),
-            );
-          } else if (b['type'] == 'image') {
-              final file = File(b['path']);
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.file(
-                        file,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-
-                    // ❌ Delete icon — visible only in edit mode
-                    if (isEditingDescription)
-                      Positioned(
-                        top: 4,
-                        right: 4,
-                        child: IconButton(
-                          icon: const Icon(Icons.close, color: Colors.red, size: 22),
-                          onPressed: () {
-                            setState(() {
-                              blocks.removeAt(i);
-                              _safeSave(widget.note);
-                            });
-                          },
-                        ),
-                      ),
-
-                    // 🔍 Fullscreen icon — visible only when NOT editing
-                    if (!isEditingDescription)
-                      Positioned(
-                        top: 4,
-                        right: 4,
-                        child: IconButton(
-                          icon: const Icon(Icons.fullscreen, color: Colors.white70, size: 24),
-                          onPressed: () => _openFullScreenImage(file),
-                        ),
-                      ),
-                  ],
+                  ),
+          );
+        } else if (b['type'] == 'image') {
+          final file = File(b['path']);
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.file(
+                    file,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                  ),
                 ),
-              );
-            }
-          return const SizedBox.shrink();
-        },
-      ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: const Color(0xFF4B0082),
-        onPressed: () {
-          widget.note.title = titleController.text.trim();
-          _safeSave(widget.note);
-          setState(() {
-            isEditingTitle = false;
-            isEditingDescription = false;
-            selectedBlockIndex = null;
-            selectedStart = null;
-            selectedEnd = null;
-            selectedText = null;
-          });
-          if(Navigator.canPop(context)){
-            Navigator.pop(context, widget.note);
-          }
-        },
-        child: const Icon(Icons.check, color: Colors.white54),
-      ),
-    );
-  }
+
+                // ❌ Delete icon — visible only in edit mode
+                if (isEditingDescription)
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: IconButton(
+                      icon: const Icon(Icons.close,
+                          color: Colors.red, size: 22),
+                      onPressed: () {
+                        setState(() {
+                          blocks.removeAt(i);
+                          _safeSave(widget.note);
+                        });
+                      },
+                    ),
+                  ),
+
+                // 🔍 Fullscreen icon — visible only when NOT editing
+                if (!isEditingDescription)
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: IconButton(
+                      icon: const Icon(Icons.fullscreen,
+                          color: Colors.white70, size: 24),
+                      onPressed: () => _openFullScreenImage(file),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        }
+        return const SizedBox.shrink();
+      },
+    ),
+    floatingActionButton: FloatingActionButton(
+      backgroundColor: const Color(0xFF4B0082),
+      onPressed: () {
+        widget.note.title = titleController.text.trim();
+        _safeSave(widget.note);
+        setState(() {
+          isEditingTitle = false;
+          isEditingDescription = false;
+          selectedBlockIndex = null;
+          selectedStart = null;
+          selectedEnd = null;
+          selectedText = null;
+        });
+        if (Navigator.canPop(context)) {
+          Navigator.pop(context, widget.note);
+        }
+      },
+      child: const Icon(Icons.check, color: Colors.white54),
+    ),
+  );
+}
+
 
   void _openFullScreenImage(File file) {
     showGeneralDialog(
