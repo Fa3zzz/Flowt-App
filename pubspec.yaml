@@ -39,6 +39,7 @@ dependencies:
   image_picker: ^1.1.1
   permission_handler: ^11.3.1
   uuid: ^4.2.2
+  super_editor: 0.3.0-dev.35
 
 dev_dependencies:
   flutter_test:

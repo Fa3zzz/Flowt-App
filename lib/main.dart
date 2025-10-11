@@ -6,9 +6,12 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:hive/hive.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
-import 'package:flutter/services.dart'; // ✅ this goes before the part
+import 'package:flutter/services.dart'; // ✅ keep before `part`
+import 'package:path_provider/path_provider.dart'; // ✅ add here (safe permanent path support)
+import 'package:super_editor/super_editor.dart'; // ✅ add here (rich text editor support)
 
-part 'main.g.dart'; // ✅ this must be last
+part 'main.g.dart'; // ✅ always last
+
 
 
 const double kFontSize = 16.0;
@@ -418,22 +421,87 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(source: source);
-    if (pickedFile != null) {
-      setState(() {
-        // add image + empty text (both with ids)
-        blocks.add({"id": _uuid.v4(), "type": "image", "path": pickedFile.path});
-        blocks.add({"id": _uuid.v4(), "type": "text", "content": "", "controller": null});
+    if (pickedFile == null) return;
+
+    // ✅ Safely persist image file (works for both camera & gallery)
+    final dir = await getApplicationDocumentsDirectory();
+    final fileExt = pickedFile.path.split('.').last;
+    final newPath =
+        '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$fileExt';
+    final newFile = File(newPath);
+
+    // 🔹 Read + write bytes instead of copy() (fixes iOS camera temp issue)
+    final bytes = await pickedFile.readAsBytes();
+    await newFile.writeAsBytes(bytes);
+    await Future.delayed(const Duration(milliseconds: 100)); // allow fs sync
+
+    int insertAt = blocks.length; // default append
+    String? afterText = "";
+
+    // 🔍 Find focused text block
+    if (selectedBlockIndex != null &&
+        selectedBlockIndex! >= 0 &&
+        selectedBlockIndex! < blocks.length) {
+      final b = blocks[selectedBlockIndex!];
+      if (b['type'] == 'text' && b['controller'] is TextEditingController) {
+        final ctrl = b['controller'] as TextEditingController;
+        final text = ctrl.text;
+        final cursor = ctrl.selection.baseOffset;
+
+        if (cursor >= 0 && cursor <= text.length) {
+          // find next line boundary
+          int nextLineBreak = text.indexOf('\n', cursor);
+          if (nextLineBreak == -1) nextLineBreak = text.length;
+
+          final before = text.substring(0, nextLineBreak).trimRight();
+          afterText = text.substring(nextLineBreak).trimLeft();
+
+          // update current block content
+          ctrl.text = before;
+          b['content'] = before;
+
+          insertAt = selectedBlockIndex! + 1;
+        }
+      }
+    }
+
+    setState(() {
+      // 🖼️ Insert image using the permanent saved path
+      blocks.insert(insertAt, {
+        "id": _uuid.v4(),
+        "type": "image",
+        "path": newFile.path,
       });
 
-      await Future.delayed(const Duration(milliseconds: 200));
-      if (!mounted) return;
-      scrollController.animateTo(
-        scrollController.position.maxScrollExtent + 200,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
-    }
+      // 🧱 Insert a text block after image (so user can type below)
+      final newController = TextEditingController(text: afterText ?? "");
+      newController.addListener(() {
+        final idx = blocks.indexWhere((x) => x["controller"] == newController);
+        if (idx != -1) {
+          blocks[idx]["content"] = newController.text;
+        }
+      });
+
+      blocks.insert(insertAt + 1, {
+        "id": _uuid.v4(),
+        "type": "text",
+        "content": afterText ?? "",
+        "controller": newController,
+      });
+    });
+
+    // 🔽 Smooth scroll to bring the new image into view
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+    scrollController.animateTo(
+      scrollController.position.maxScrollExtent + 200,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    );
   }
+
+
+
 
   void _showImageOptions() {
     showModalBottomSheet(
@@ -662,6 +730,8 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
               ),
             ),
             const SizedBox(height: 12),
+
+            // --- note blocks ---
             ...blocks.asMap().entries.map((entry) {
               final index = entry.key;
               final b = entry.value;
@@ -672,7 +742,9 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                   c.addListener(() {
                     b["content"] = c.text;
                     final sel = c.selection;
-                    if (sel.start != sel.end && sel.start >= 0 && sel.end <= c.text.length) {
+                    if (sel.start != sel.end &&
+                        sel.start >= 0 &&
+                        sel.end <= c.text.length) {
                       final (s, e) = _normalizedRange(c.text, sel.start, sel.end);
                       if (e > s) {
                         setState(() {
@@ -695,6 +767,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                   });
                   b["controller"] = c;
                 }
+
                 final c = b["controller"] as TextEditingController;
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
@@ -721,7 +794,8 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                         onTap: () => _openFullScreen(file),
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(12),
-                          child: Image.file(file, width: double.infinity, fit: BoxFit.cover),
+                          child: Image.file(file,
+                              width: double.infinity, fit: BoxFit.cover),
                         ),
                       ),
                       IconButton(
@@ -732,8 +806,10 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                   ),
                 );
               }
+
               return const SizedBox.shrink();
             }),
+
             const SizedBox(height: 80),
           ],
         ),
@@ -747,7 +823,6 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
               .toList();
 
           final contentBlocks = blocks.map<Map<String, String>>((b) {
-            // 🔹 Always preserve or assign a persistent ID
             if (b['id'] == null || (b['id'] as String).isEmpty) {
               b['id'] = _uuid.v4();
             }
@@ -761,10 +836,13 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
             }
             return {"id": id, "type": "text", "content": ""};
           }).toList();
-          final description = contentBlocks
-              .where((b) => b["type"] == "text")
-              .map((b) => b["content"] ?? "")
-              .join("\n");
+
+          // ✅ Keep description as the *first text block* only (like a summary)
+          final firstTextBlock = contentBlocks.firstWhere(
+            (b) => b["type"] == "text" && (b["content"] ?? "").trim().isNotEmpty,
+            orElse: () => {"content": ""},
+          );
+          final description = firstTextBlock["content"] ?? "";
 
           final cleanLinks = links
               .where((l) => l.containsKey("block") && l.containsKey("start") && l.containsKey("end"))
@@ -802,6 +880,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   String? highlightQuery;
   double highlightOpacity = 1.0;
   String? _lastBlockIdForLink;
+  int? _viewCaretOffset;
+
 
   String? selectedText;
   int? selectedBlockIndex;
@@ -881,12 +961,10 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
     f.addListener(() {
       if (f.hasFocus) {
-        // 🔹 Update the active block when user focuses/taps inside it
-        setState(() {
-          selectedBlockIndex = blocks.indexOf(b);
-        });
+        // 🔹 Mark this block as the active one when user focuses it
+        setState(() => selectedBlockIndex = blocks.indexOf(b));
       } else {
-        // 🔹 Clear selection only if user leaves this block
+        // 🔹 Clear selection when focus is lost
         setState(() {
           if (selectedBlockIndex == blocks.indexOf(b)) {
             selectedText = null;
@@ -899,20 +977,29 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     });
 
     c.addListener(() {
+      // ✅ Update this block’s content live
       b['content'] = c.text;
-      widget.note.description = blocks
-          .where((e) => e['type'] == 'text')
-          .map((e) => (e['content'] ?? '') as String)
-          .join("\n");
 
-      // 🎯 Track selection live without flicker
+      // ✅ Always sync the in-memory structure with Hive’s model
+      widget.note.contentBlocks = _sanitizeBlocks();
+
+      // ✅ Keep description text accurate for list previews
+      widget.note.description = widget.note.contentBlocks
+          .where((e) => e['type'] == 'text')
+          .map((e) => e['content'] ?? '')
+          .join('\n');
+
+      // ✅ Save to Hive immediately so nothing is lost
+      widget.note.save();
+
+      // 🎯 Track selection live (for link highlighting, etc.)
       if (f.hasFocus) {
         final sel = c.selection;
         if (sel.start != sel.end &&
             sel.start >= 0 &&
             sel.end <= c.text.length) {
           final (s, e) = _normalizedRange(c.text, sel.start, sel.end);
-          if (s < 0 || e > c.text.length || s >= e) return; // 🛑 guard
+          if (s < 0 || e > c.text.length || s >= e) return;
           if (!mounted) return;
 
           if (selectedStart != s || selectedEnd != e) {
@@ -939,13 +1026,17 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
 
 
+
   void _attachControllers() {
     for (final b in blocks) {
       if (b['type'] == 'text') {
+        b['controller'] ??= TextEditingController(text: b['content'] ?? '');
+        b['focusNode'] ??= FocusNode();
         _wireTextBlock(b);
       }
     }
   }
+
 
   @override
   void dispose() {
@@ -960,36 +1051,55 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   }
 
   List<Map<String, String>> _sanitizeBlocks() {
-    return blocks.map((b) {
+    // ✅ Ensure all blocks are properly saved, including empty text blocks after images
+    final sanitized = <Map<String, String>>[];
+
+    for (final b in blocks) {
       final type = (b['type'] ?? 'text').toString();
-      if (b['id'] == null || (b['id'] as String).isEmpty) {
-        b['id'] = const Uuid().v4();
-      }
-      final id = b['id']?.toString() ?? const Uuid().v4();
+      b['id'] ??= const Uuid().v4();
+      final id = b['id'].toString();
 
       if (type == 'text') {
-        final txt = (b['controller'] is TextEditingController)
+        // 🧠 Always capture latest text from controller if available
+        final text = (b['controller'] is TextEditingController)
             ? (b['controller'] as TextEditingController).text
             : (b['content'] ?? '').toString();
-        return {"id": id, "type": "text", "content": txt};
+
+        // ⚡ Preserve empty text blocks to maintain structure (so text after image persists)
+        sanitized.add({
+          "id": id,
+          "type": "text",
+          "content": text,
+        });
       } else if (type == 'image') {
-        return {"id": id, "type": "image", "path": (b['path'] ?? '').toString()};
+        sanitized.add({
+          "id": id,
+          "type": "image",
+          "path": (b['path'] ?? '').toString(),
+        });
       }
-      return {"id": id, "type": "text", "content": ""};
-    }).toList();
+    }
+
+    return sanitized;
   }
 
 
+
   void _safeSave(Note note) {
+    // 🧠 Always rebuild a clean, full snapshot of the current note
     final sanitized = _sanitizeBlocks();
+
+    // ✅ Preserve even empty text blocks (to keep layout under images)
     note.contentBlocks = sanitized;
+
+    // ✅ Description = all text joined, even empty lines for spacing
     note.description = sanitized
         .where((b) => b['type'] == 'text')
         .map((b) => b['content'] ?? '')
-        .join("\n");
+        .join('\n');
 
-    // ✅ Deep-copy links BEFORE clearing so we don't clear the source we're copying from
-    final List<Map<String, String>> linksCopy = widget.note.links
+    // ✅ Keep a safe copy of links before replacing
+    final linksCopy = widget.note.links
         .map((l) => Map<String, String>.from(l))
         .toList();
 
@@ -997,130 +1107,165 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       ..clear()
       ..addAll(linksCopy);
 
+    // ✅ Persist the updated note to Hive
     note.save();
+
+    // 🔹 Ensure in-memory state matches the saved structure
+    setState(() {
+      blocks = sanitized.map((b) => Map<String, dynamic>.from(b)).toList();
+    });
   }
-
-
 
 
   // ---------- Image insertion ----------
 
-
   Future<void> _pickImage(ImageSource source) async {
-    // ensure there's a text block target (same logic you had)
-    if (selectedBlockIndex == null) {
-      final idx = blocks.indexWhere((b) => (b['type'] ?? 'text') == 'text');
-      if (idx != -1) {
-        setState(() => selectedBlockIndex = idx);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No text box available to attach image.')),
-        );
-        return;
-      }
-    }
-
     final picker = ImagePicker();
+    final picked = await picker.pickImage(source: source);
+    if (picked == null) return;
 
-    Future<XFile?> tryPick() async {
-      try {
-        return await picker.pickImage(source: source);
-      } on PlatformException catch (e) {
-        debugPrint('pickImage error: ${e.code} ${e.message}');
-        return null;
-      }
+    // 🗂️ Persist image safely for both camera & gallery
+    final dir = await getApplicationDocumentsDirectory();
+    final fileExt = picked.path.split('.').last;
+    final newPath = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$fileExt';
+    final newFile = File(newPath);
+
+    try {
+      final bytes = await picked.readAsBytes();
+      await newFile.writeAsBytes(bytes);
+    } catch (_) {
+      return;
     }
 
-    // 1) Try the picker first (lets iOS/Android drive permission flow)
-    XFile? picked = await tryPick();
+    await Future.delayed(const Duration(milliseconds: 200));
 
-    // 2) If the picker couldn’t open/return a file, request minimal permission and retry once
-    if (picked == null) {
-      if (Platform.isIOS) {
-        if (source == ImageSource.camera) {
-          await Permission.camera.request();
-        } else {
-          // Limited access is fine for picking
-          await Permission.photos.request();
-        }
-      } else if (Platform.isAndroid) {
-        if (source == ImageSource.camera) {
-          await Permission.camera.request();
-        } else {
-          // On Android 13+ this usually isn’t required for picker, but request just in case
-          await Permission.storage.request();
-        }
-      }
-
-      picked = await tryPick();
-      if (picked == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Permission denied')),
-        );
-        return;
-      }
-    }
-
-    // 3) Insert image + new text block (your existing behavior)
-    setState(() {
-      int insertAt;
-      if (selectedBlockIndex != null &&
-          selectedBlockIndex! >= 0 &&
-          selectedBlockIndex! < blocks.length) {
-        insertAt = selectedBlockIndex! + 1;
-      } else {
-        insertAt = blocks.length; // 👈 append at end if nothing selected
-      }
-
-      blocks.insert(insertAt, {"type": "image", "path": picked!.path});
-      blocks.insert(insertAt + 1, {
+    // 🧩 Ensure there’s at least one valid text block
+    if (blocks.isEmpty) {
+      final newTextBlock = {
+        "id": const Uuid().v4(),
         "type": "text",
         "content": "",
         "controller": TextEditingController(),
         "focusNode": FocusNode(),
-        "_wired": true,
+        "_wired": false,
+      };
+      _wireTextBlock(newTextBlock);
+      setState(() {
+        blocks.add(newTextBlock);
+        selectedBlockIndex = 0;
       });
+    }
+
+    // 🧠 Ensure we target a valid text block
+    if (selectedBlockIndex == null ||
+        selectedBlockIndex! < 0 ||
+        selectedBlockIndex! >= blocks.length ||
+        blocks[selectedBlockIndex!]['type'] != 'text') {
+      selectedBlockIndex = blocks.lastIndexWhere((b) => b['type'] == 'text');
+      if (selectedBlockIndex == -1) {
+        final newTextBlock = {
+          "id": const Uuid().v4(),
+          "type": "text",
+          "content": "",
+          "controller": TextEditingController(),
+          "focusNode": FocusNode(),
+          "_wired": false,
+        };
+        _wireTextBlock(newTextBlock);
+        setState(() {
+          blocks.add(newTextBlock);
+          selectedBlockIndex = blocks.length - 1;
+        });
+      }
+    }
+
+    if (selectedBlockIndex == null ||
+        selectedBlockIndex! < 0 ||
+        selectedBlockIndex! >= blocks.length) return;
+
+    final block = blocks[selectedBlockIndex!];
+    int insertAt = selectedBlockIndex! + 1;
+    String? afterText = "";
+
+    // 🧩 Split text if caret exists
+    if (block['type'] == 'text' &&
+        block['controller'] is TextEditingController) {
+      final ctrl = block['controller'] as TextEditingController;
+      final text = ctrl.text;
+      final caret = ctrl.selection.baseOffset.clamp(0, text.length);
+      afterText = text.substring(caret);
+      ctrl.text = text.substring(0, caret);
+      block['content'] = ctrl.text;
+    }
+
+    setState(() {
+      // 🖼️ Insert image (don't immediately save)
+      blocks.insert(insertAt, {
+        "id": const Uuid().v4(),
+        "type": "image",
+        "path": newFile.path,
+      });
+
+      // 🧱 Add editable block after image
+      final newTextBlock = {
+        "id": const Uuid().v4(),
+        "type": "text",
+        "content": afterText ?? "",
+        "controller": TextEditingController(text: afterText ?? ""),
+        "focusNode": FocusNode(),
+        "_wired": false,
+      };
+      blocks.insert(insertAt + 1, newTextBlock);
+      _wireTextBlock(newTextBlock);
     });
+
+    // ✅ Delay save a bit for camera write completion
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (!mounted) return;
 
     _safeSave(widget.note);
   }
 
 
+
+
+
+
   void _showImageOptions() {
-  showModalBottomSheet(
-    context: context,
-    backgroundColor: Colors.grey[900],
-    builder: (context) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            leading: const Icon(Icons.camera_alt, color: Colors.white54),
-            title: const Text(
-              "Take Photo",
-              style: TextStyle(color: Colors.white54),
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.grey[900],
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt, color: Colors.white54),
+              title: const Text(
+                "Take Photo",
+                style: TextStyle(color: Colors.white54),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.camera);
+              },
             ),
-            onTap: () {
-              Navigator.pop(context);
-              _pickImage(ImageSource.camera);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.photo, color: Colors.white54),
-            title: const Text(
-              "Choose from Gallery",
-              style: TextStyle(color: Colors.white54),
+            ListTile(
+              leading: const Icon(Icons.photo, color: Colors.white54),
+              title: const Text(
+                "Choose from Gallery",
+                style: TextStyle(color: Colors.white54),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImage(ImageSource.gallery);
+              },
             ),
-            onTap: () {
-              Navigator.pop(context);
-              _pickImage(ImageSource.gallery);
-            },
-          ),
-        ],
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
 
   // ---------- Linking helpers ----------
@@ -1486,9 +1631,17 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     setState(() {
       highlightQuery = null;
       isEditingDescription = true;
+    });
 
-      int firstTextIndex = blocks.indexWhere((b) => (b['type'] ?? 'text') == 'text');
-      if (firstTextIndex == -1) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // 1️⃣ Pick the block the user interacted with, or fallback
+      int target = (selectedBlockIndex ?? -1);
+      if (target < 0 || target >= blocks.length || (blocks[target]['type'] ?? 'text') != 'text') {
+        // Prefer last text block
+        target = blocks.lastIndexWhere((b) => (b['type'] ?? 'text') == 'text');
+      }
+      if (target == -1) {
+        // ensure at least one text block exists
         final nb = {
           "type": "text",
           "content": "",
@@ -1496,33 +1649,29 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
           "focusNode": FocusNode(),
         };
         _wireTextBlock(nb);
-        blocks.add(nb);
-        firstTextIndex = blocks.length - 1;
-        _safeSave(widget.note);
+        setState(() {
+          blocks.add(nb);
+          target = blocks.length - 1;
+        });
       } else {
-        _wireTextBlock(blocks[firstTextIndex]);
+        _wireTextBlock(blocks[target]);
       }
 
-      // ✅ Always select the first text block
-      selectedBlockIndex = firstTextIndex;
+      final ctrl  = blocks[target]['controller'] as TextEditingController;
+      final focus = blocks[target]['focusNode'] as FocusNode;
 
-      // ✅ Explicitly set focus and selection
-      final f = blocks[firstTextIndex]['focusNode'] as FocusNode?;
-      final c = blocks[firstTextIndex]['controller'] as TextEditingController?;
-      f?.requestFocus();
-      c?.selection = TextSelection.collapsed(offset: c.text.length);
-    });
+      // 2️⃣ Place caret at meaningful spot
+      int caret = (_viewCaretOffset ?? selectedEnd ?? selectedStart ?? ctrl.text.length);
+      if (caret < 0) caret = 0;
+      if (caret > ctrl.text.length) caret = ctrl.text.length;
 
-    // ✅ Also schedule a post-frame safety check
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (selectedBlockIndex == null && blocks.isNotEmpty) {
-          final fallback = blocks.indexWhere((b) => b['type'] == 'text');
-          if (fallback != -1) {
-            setState(() => selectedBlockIndex = fallback);
-          }
-        }
+      focus.requestFocus();
+      ctrl.selection = TextSelection.collapsed(offset: caret);
+
+      setState(() => selectedBlockIndex = target);
     });
   }
+
 
 
 
@@ -1599,40 +1748,39 @@ Widget build(BuildContext context) {
                     ),
                     onTap: () => setState(() => selectedBlockIndex = i),
                   )
-                : AnimatedOpacity(
-                    opacity: highlightOpacity,
-                    duration: const Duration(seconds: 1),
-                    child: SelectableText.rich(
-                      TextSpan(
-                        children:
-                            _buildDescriptionSpans(b['content'] ?? '', i),
-                      ),
-                      style: const TextStyle(
-                          color: Colors.white54, fontSize: 16),
-                      onSelectionChanged: (sel, cause) {
-                        final text = (b['content'] ?? '') as String;
-                        if (sel.start != sel.end &&
-                            sel.start >= 0 &&
-                            sel.end <= text.length) {
-                          final (s, e) =
-                              _normalizedRange(text, sel.start, sel.end);
-                          setState(() {
-                            selectedText = text.substring(s, e);
-                            selectedBlockIndex = i;
-                            selectedStart = s;
-                            selectedEnd = e;
-                            _lastBlockIdForLink = (b['id']?.toString() ?? '');
-                          });
-                        } else {
-                          setState(() {
-                            selectedText = null;
-                            selectedStart = null;
-                            selectedEnd = null;
-                          });
-                        }
-                      },
+                : SelectableText.rich(
+                    TextSpan(
+                      children: _buildDescriptionSpans(b['content'] ?? '', i),
                     ),
+                    style: const TextStyle(color: Colors.white54, fontSize: 16),
+                    onSelectionChanged: (sel, cause) {
+                      final text = (b['content'] ?? '') as String;
+
+                      // Always remember which block was interacted with
+                      selectedBlockIndex = i;
+                      _lastBlockIdForLink = (b['id']?.toString() ?? '');
+
+                      if (sel.start == sel.end) {
+                        // 🧭 collapsed caret (single tap)
+                        setState(() {
+                          selectedText = null;
+                          selectedStart = sel.baseOffset;
+                          selectedEnd = sel.baseOffset;
+                          _viewCaretOffset = sel.baseOffset;
+                        });
+                      } else {
+                        // 📏 actual selection
+                        final (s, e) = _normalizedRange(text, sel.start, sel.end);
+                        setState(() {
+                          selectedText = text.substring(s, e);
+                          selectedStart = s;
+                          selectedEnd = e;
+                          _viewCaretOffset = e; // caret after selection
+                        });
+                      }
+                    },
                   ),
+
           );
         } else if (b['type'] == 'image') {
           final file = File(b['path']);
