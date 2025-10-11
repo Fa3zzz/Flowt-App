@@ -1,16 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:hive/hive.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
-import 'package:flutter/services.dart'; // ✅ keep before `part`
-import 'package:path_provider/path_provider.dart'; // ✅ add here (safe permanent path support)
-import 'package:super_editor/super_editor.dart'; // ✅ add here (rich text editor support)
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 
-part 'main.g.dart'; // ✅ always last
+part 'main.g.dart';
 
 
 
@@ -33,7 +31,10 @@ void main() async {
 
   await Hive.initFlutter();
   Hive.registerAdapter(NoteAdapter());
-  await Hive.openBox<Note>('notesBox_v2');
+  await Hive.openBox<Note>(
+    'notesBox_v2',
+    compactionStrategy: (total, deleted) => deleted > 20,
+  );
 
   final notesBox = Hive.box<Note>('notesBox_v2');
   // await notesBox.clear();
@@ -51,12 +52,18 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Flutter Demo',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: Colors.black,
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFF4B0082),
-          foregroundColor: Colors.white54,
+          foregroundColor: Colors.white,
+        ),
+        floatingActionButtonTheme: const FloatingActionButtonThemeData(
+          backgroundColor: Color(0xFF4B0082),
+          foregroundColor: Colors.white,
         ),
       ),
+
       home: const NotesHome(),
     );
   }
@@ -79,14 +86,19 @@ class Note extends HiveObject {
   @HiveField(4)
   List<Map<String, String>> contentBlocks;
 
+  @HiveField(5)
+  DateTime lastModified;
+
   Note({
     required this.title,
     this.description,
     List<Map<String, String>>? links,
     this.imagePaths = const [],
     List<Map<String, String>>? contentBlocks,
+    DateTime? lastModified,
   })  : links = List<Map<String, String>>.from(links ?? []),
-        contentBlocks = contentBlocks ?? [];
+        contentBlocks = contentBlocks ?? [],
+        lastModified = lastModified ?? DateTime.now();
 }
 
 
@@ -100,6 +112,21 @@ class NotesHome extends StatefulWidget {
 
 class _NotesHomeState extends State<NotesHome> {
   final notesBox = Hive.box<Note>('notesBox_v2');
+
+  final List<String> _monthNameList = const [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December'
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -125,61 +152,136 @@ class _NotesHomeState extends State<NotesHome> {
         builder: (context, Box<Note> box, _) {
           if (box.isEmpty) {
             return const Center(
-              child: Text("No notes yet",
-                  style: TextStyle(color: Colors.white54, fontSize: 18)),
+              child: Text(
+                "No notes yet",
+                style: TextStyle(color: Colors.white54, fontSize: 18),
+              ),
             );
           }
 
-          return ListView.builder(
-            itemCount: box.length,
-            itemBuilder: (context, index) {
-              final note = box.getAt(index)!;
+          // ✅ Sort notes by last modified (newest first)
+          final notes = box.values.toList()
+            ..sort((a, b) => b.lastModified.compareTo(a.lastModified));
 
-              return Dismissible(
-                key: Key(note.key.toString()),
-                direction: DismissDirection.endToStart,
-                background: Container(
-                  alignment: Alignment.centerRight,
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  color: Colors.red,
-                  child: const Icon(Icons.delete, color: Colors.white),
-                ),
-                onDismissed: (_) => note.delete(),
-                child: Card(
-                  margin:
-                      const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                  color: Colors.grey[900],
-                  elevation: 4,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: ListTile(
-                    title: Text(
-                      note.title,
+          // ✅ Group notes by date
+          final Map<String, List<Note>> groupedNotes = {};
+          for (var note in notes) {
+            final noteDate = note.lastModified;
+            final now = DateTime.now();
+            final diff = now.difference(noteDate).inDays;
+
+            String label;
+            if (diff == 0 &&
+                noteDate.day == now.day &&
+                noteDate.month == now.month &&
+                noteDate.year == now.year) {
+              label = "Today";
+            } else if (diff == 1 ||
+                (now.day - noteDate.day == 1 &&
+                    now.month == noteDate.month &&
+                    now.year == noteDate.year)) {
+              label = "Yesterday";
+            } else {
+              label = "${noteDate.day} ${_monthNameList[noteDate.month - 1]}, ${noteDate.year}";
+            }
+
+            groupedNotes.putIfAbsent(label, () => []).add(note);
+          }
+
+          // ✅ Build sectioned list
+          // ✅ Sort section keys by recency (Today → Yesterday → older dates)
+          final orderedSections = groupedNotes.entries.toList()
+            ..sort((a, b) {
+              DateTime parseLabel(String label) {
+                if (label == "Today") return DateTime.now();
+                if (label == "Yesterday") return DateTime.now().subtract(const Duration(days: 1));
+                final parts = label.replaceAll(',', '').split(' ');
+                final day = int.parse(parts[0]);
+                final month = _monthNameList.indexOf(parts[1]) + 1;
+                final year = int.parse(parts[2]);
+                return DateTime(year, month, day);
+              }
+
+              return parseLabel(b.key).compareTo(parseLabel(a.key));
+            });
+
+          return ListView(
+            padding: const EdgeInsets.only(bottom: 80),
+            children: orderedSections.map((entry) {
+              final sectionTitle = entry.key;
+              final sectionNotes = entry.value;
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                    child: Text(
+                      sectionTitle,
                       style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 18,
+                        color: Colors.white,
                         fontWeight: FontWeight.bold,
+                        fontSize: 18,
                       ),
                     ),
-                    onTap: () async {
-                      final updatedNote = await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => NoteDetailScreen(note: note),
-                        ),
-                      );
-
-                      if (updatedNote != null) {
-                        note.title = updatedNote.title;
-                        note.description = updatedNote.description;
-                        note.save();
-                      }
-                    },
                   ),
-                ),
+                  ...sectionNotes.map((note) {
+                    return Dismissible(
+                      key: Key(note.key.toString()),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        color: Colors.red,
+                        child: const Icon(Icons.delete, color: Colors.white),
+                      ),
+                      onDismissed: (_) => note.delete(),
+                      child: Card(
+                        margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                        color: Colors.grey[900],
+                        elevation: 2,
+                        shadowColor: Colors.deepPurple.withOpacity(0.3),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: ListTile(
+                          title: Text(
+                            note.title,
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          subtitle: note.description != null && note.description!.isNotEmpty
+                              ? Text(
+                                  note.description!,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(color: Colors.white38),
+                                )
+                              : null,
+                          onTap: () async {
+                            final updatedNote = await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => NoteDetailScreen(note: note),
+                              ),
+                            );
+
+                            if (updatedNote != null) {
+                              note.title = updatedNote.title;
+                              note.description = updatedNote.description;
+                              note.save();
+                            }
+                          },
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ],
               );
-            },
+            }).toList(),
           );
         },
       ),
@@ -849,13 +951,14 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
               .toList();
 
           final newNote = Note(
-            title: titleController.text,
+            title: titleController.text.trim(),
             description: description.isNotEmpty ? description : null,
             imagePaths: imagePaths,
             contentBlocks: contentBlocks,
             links: cleanLinks.cast<Map<String, String>>(),
           );
 
+          newNote.lastModified = DateTime.now();
           Navigator.pop(context, newNote);
         },
         child: const Icon(Icons.check, color: Colors.white54),
@@ -1086,6 +1189,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
 
   void _safeSave(Note note) {
+    note.lastModified = DateTime.now(); // 🕒 update modified time
+
     // 🧠 Always rebuild a clean, full snapshot of the current note
     final sanitized = _sanitizeBlocks();
 
@@ -1688,7 +1793,7 @@ Widget build(BuildContext context) {
               onSubmitted: (_) {
                 setState(() {
                   isEditingTitle = false;
-                  widget.note.title = titleController.text;
+                  widget.note.title = titleController.text.trim();
                   widget.note.save();
                 });
               },
@@ -1837,7 +1942,10 @@ Widget build(BuildContext context) {
       backgroundColor: const Color(0xFF4B0082),
       onPressed: () {
         widget.note.title = titleController.text.trim();
+        widget.note.lastModified = DateTime.now(); // 🕒 update timestamp
         _safeSave(widget.note);
+        widget.note.save(); // 💾 ensure Hive writes the change
+
         setState(() {
           isEditingTitle = false;
           isEditingDescription = false;
@@ -1846,6 +1954,7 @@ Widget build(BuildContext context) {
           selectedEnd = null;
           selectedText = null;
         });
+
         if (Navigator.canPop(context)) {
           Navigator.pop(context, widget.note);
         }
