@@ -393,6 +393,7 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
       final title = note.title.toLowerCase();
       final desc = note.description?.toLowerCase() ?? "";
 
+      // 🟣 Match in title
       if (title.contains(lower)) {
         matches.add({
           "note": note,
@@ -400,26 +401,38 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
           "highlight": query,
           "context": note.title,
         });
-      } else if (desc.contains(lower)) {
-        final idx = desc.indexOf(lower);
-        if (idx != -1) {
-          final full = note.description!;
-          int start = full.lastIndexOf('.', idx) + 1;
-          if (start < 0) start = 0;
-          int end = full.indexOf('.', idx);
-          if (end == -1) end = full.length;
-          final snippet = full.substring(start, end).trim();
+      }
 
-          matches.add({
-            "note": note,
-            "matchType": "description",
-            "highlight": query,
-            "context": snippet,
-          });
+      // 🟣 Match in description (multi-hit safe version)
+      if (desc.contains(lower)) {
+        final full = note.description!;
+        int idx = 0;
+        while (true) {
+          idx = desc.indexOf(lower, idx);
+          if (idx == -1) break;
+
+          int start = full.lastIndexOf('.', idx);
+          if (start == -1) start = (idx - 40).clamp(0, full.length - 1);
+          int end = full.indexOf('.', idx + lower.length);
+          if (end == -1) end = (idx + 250).clamp(0, full.length);
+
+          if (end > start && end <= full.length && start >= 0) {
+            final snippet = full.substring(start, end).trim();
+            matches.add({
+              "note": note,
+              "matchType": "description",
+              "highlight": query,
+              "context": snippet,
+              "matchIndex": idx,
+            });
+          }
+
+          idx += lower.length;
         }
       }
     }
 
+    // 🧠 Sort priority: title > description
     matches.sort((a, b) {
       if (a["matchType"] == "title" && b["matchType"] != "title") return -1;
       if (a["matchType"] != "title" && b["matchType"] == "title") return 1;
@@ -428,12 +441,11 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
 
     setState(() {
       results = matches;
-      fadedHighlight = null; // reset fade state
+      fadedHighlight = null;
     });
 
-    // 🎨 Smooth fade-out instead of instant drop
+    // 🎨 Fade highlight smoothly
     if (query.isNotEmpty) {
-      double opacity = 1.0;
       const fadeDuration = Duration(seconds: 2);
       const steps = 20;
       final stepTime = fadeDuration.inMilliseconds ~/ steps;
@@ -498,8 +510,8 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
                     ),
                     TextSpan(
                       text: contextText.substring(idx, idx + highlight.length),
-                      style: TextStyle(
-                        color: Color.lerp(const Color(0xFF9B30FF), Colors.white54, 1 - fadeValue),
+                      style: const TextStyle(
+                        color: Color(0xFF9B30FF),
                         fontWeight: FontWeight.normal,
                       ),
                     ),
@@ -536,6 +548,7 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
                           builder: (_) => NoteDetailScreen(
                             note: note,
                             highlightQuery: highlight,
+                            scrollToMatchIndex: match["matchIndex"], // ✅ added for precise scroll
                           ),
                         ),
                       );
@@ -616,71 +629,88 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
     // ✅ Safely persist image file (works for both camera & gallery)
     final dir = await getApplicationDocumentsDirectory();
     final fileExt = pickedFile.path.split('.').last;
-    final newPath =
-        '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$fileExt';
+    final newPath = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$fileExt';
     final newFile = File(newPath);
 
-    // 🔹 Read + write bytes instead of copy() (fixes iOS camera temp issue)
+    // 🔹 Use bytes copy for cross-platform stability
     final bytes = await pickedFile.readAsBytes();
     await newFile.writeAsBytes(bytes);
-    await Future.delayed(const Duration(milliseconds: 100)); // allow fs sync
+    await Future.delayed(const Duration(milliseconds: 100));
 
-    int insertAt = blocks.length; // default append
-    String? afterText = "";
+    // ⚙️ Prepare split logic
+    int insertAt = blocks.length;
+    String beforeText = "";
+    String afterText = "";
 
-    // 🔍 Find focused text block
+    // 🔍 Stabilize selected block index (ensure it’s still valid)
     if (selectedBlockIndex != null &&
         selectedBlockIndex! >= 0 &&
-        selectedBlockIndex! < blocks.length) {
+        selectedBlockIndex! < blocks.length &&
+        blocks[selectedBlockIndex!]['type'] == 'text') {
       final b = blocks[selectedBlockIndex!];
-      if (b['type'] == 'text' && b['controller'] is TextEditingController) {
-        final ctrl = b['controller'] as TextEditingController;
+      final ctrl = b['controller'] as TextEditingController?;
+      if (ctrl != null) {
         final text = ctrl.text;
-        final cursor = ctrl.selection.baseOffset;
+        final cursor = ctrl.selection.baseOffset.clamp(0, text.length);
+        beforeText = text.substring(0, cursor);
+        afterText = text.substring(cursor);
 
-        if (cursor >= 0 && cursor <= text.length) {
-          // find next line boundary
-          int nextLineBreak = text.indexOf('\n', cursor);
-          if (nextLineBreak == -1) nextLineBreak = text.length;
+        ctrl.text = beforeText;
+        b['content'] = beforeText;
 
-          final before = text.substring(0, nextLineBreak).trimRight();
-          afterText = text.substring(nextLineBreak).trimLeft();
-
-          // update current block content
-          ctrl.text = before;
-          b['content'] = before;
-
-          insertAt = selectedBlockIndex! + 1;
-        }
+        insertAt = blocks.indexOf(b) + 1;
       }
+    } else {
+      // fallback: find last text block instead of top/bottom randomness
+      final lastTextIndex = blocks.lastIndexWhere((b) => b['type'] == 'text');
+      insertAt = (lastTextIndex != -1) ? lastTextIndex + 1 : blocks.length;
     }
 
+    // ✅ Safe insertion sequence (atomic)
     setState(() {
-      // 🖼️ Insert image using the permanent saved path
+      // 🖼 Insert image exactly after caret or last text block
       blocks.insert(insertAt, {
         "id": _uuid.v4(),
         "type": "image",
         "path": newFile.path,
       });
 
-      // 🧱 Insert a text block after image (so user can type below)
-      final newController = TextEditingController(text: afterText ?? "");
+      // 🧱 Insert following text block to continue typing
+      final newController = TextEditingController(text: afterText);
+      final newFocus = FocusNode();
       newController.addListener(() {
         final idx = blocks.indexWhere((x) => x["controller"] == newController);
-        if (idx != -1) {
-          blocks[idx]["content"] = newController.text;
-        }
+        if (idx != -1) blocks[idx]["content"] = newController.text;
       });
 
       blocks.insert(insertAt + 1, {
         "id": _uuid.v4(),
         "type": "text",
-        "content": afterText ?? "",
+        "content": afterText,
         "controller": newController,
+        "focusNode": newFocus,
       });
+
+      // 🔁 Re-wire selection reference to the new block for next insertion
+      selectedBlockIndex = insertAt + 1;
     });
 
-    // 🔽 Smooth scroll to bring the new image into view
+    // 🎯 Auto-focus new text block
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (selectedBlockIndex != null &&
+          selectedBlockIndex! >= 0 &&
+          selectedBlockIndex! < blocks.length) {
+        final next = blocks[selectedBlockIndex!];
+        final focus = next['focusNode'] as FocusNode?;
+        final ctrl = next['controller'] as TextEditingController?;
+        if (focus != null && ctrl != null) {
+          focus.requestFocus();
+          ctrl.selection = const TextSelection.collapsed(offset: 0);
+        }
+      }
+    });
+
+    // 🔽 Smooth scroll to keep image visible
     await Future.delayed(const Duration(milliseconds: 200));
     if (!mounted) return;
     scrollController.animateTo(
@@ -912,20 +942,40 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Column(
           children: [
-            TextField(
-              controller: titleController,
-              focusNode: titleFocus,
-              style: kBaseTextStyle,
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: Colors.grey[900],
-                hintText: "Title",
-                border: const OutlineInputBorder(),
-                hintStyle: const TextStyle(color: Colors.grey),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[900],
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.deepPurple.withOpacity(0.3),
+                    blurRadius: 12,
+                    spreadRadius: 2,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: TextField(
+                controller: titleController,
+                focusNode: titleFocus,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 22, // ⬆️ bigger font
+                  fontWeight: FontWeight.bold,
+                ),
+                decoration: InputDecoration(
+                  hintText: "Title",
+                  hintStyle: const TextStyle(
+                    color: Colors.white38,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w400,
+                  ),
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                ),
               ),
             ),
-            const SizedBox(height: 12),
-
+            const SizedBox(height: 16),
             // --- note blocks ---
             ...blocks.asMap().entries.map((entry) {
               final index = entry.key;
@@ -934,8 +984,56 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
               if (b["type"] == "text") {
                 if (b["controller"] == null) {
                   final c = TextEditingController(text: b["content"] ?? "");
+                  final f = FocusNode();
+
+                  f.addListener(() {
+                    if (f.hasFocus) {
+                      setState(() => selectedBlockIndex = index);
+                    }
+                  });
+
                   c.addListener(() {
                     b["content"] = c.text;
+
+                    // 🧹 Auto-delete empty text block when backspaced fully (except first block)
+                    if (c.text.isEmpty && blocks.length > 1) {
+                      final currentIndex = blocks.indexOf(b);
+
+                      if (currentIndex > 0) {
+                        if (b['focusNode'] != null &&
+                            (b['focusNode'] as FocusNode).hasFocus) {
+                          setState(() {
+                            blocks.removeAt(currentIndex);
+                          });
+
+                          final prevIndex = currentIndex - 1;
+                          if (prevIndex >= 0 &&
+                              blocks[prevIndex]['type'] == 'text' &&
+                              blocks[prevIndex]['controller'] is TextEditingController) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              final prevCtrl = blocks[prevIndex]['controller'] as TextEditingController;
+                              prevCtrl.selection =
+                                  TextSelection.collapsed(offset: prevCtrl.text.length);
+                              (blocks[prevIndex]['focusNode'] as FocusNode?)?.requestFocus();
+                            });
+                          }
+
+                          if (blocks.isEmpty) {
+                            setState(() {
+                              blocks.add({
+                                "id": _uuid.v4(),
+                                "type": "text",
+                                "content": "",
+                                "controller": TextEditingController(),
+                                "focusNode": FocusNode(),
+                              });
+                            });
+                          }
+                        }
+                      }
+                    }
+
+                    // 🧠 Selection handling (unchanged)
                     final sel = c.selection;
                     if (sel.start != sel.end &&
                         sel.start >= 0 &&
@@ -960,7 +1058,9 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                       });
                     }
                   });
+
                   b["controller"] = c;
+                  b["focusNode"] = f;
                 }
 
                 final c = b["controller"] as TextEditingController;
@@ -968,6 +1068,7 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                   padding: const EdgeInsets.only(bottom: 12),
                   child: TextField(
                     controller: c,
+                    focusNode: b["focusNode"],
                     style: kBaseTextStyle,
                     decoration: InputDecoration(
                       hintText: index == 0 ? "Description…" : "",
@@ -1063,7 +1164,13 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
 class NoteDetailScreen extends StatefulWidget {
   final Note note;
   final String? highlightQuery;
-  const NoteDetailScreen({super.key, required this.note, this.highlightQuery});
+  final int? scrollToMatchIndex; 
+  const NoteDetailScreen({
+    super.key,
+    required this.note, 
+    this.highlightQuery, 
+    this.scrollToMatchIndex,
+  });
 
   @override
   State<NoteDetailScreen> createState() => _NoteDetailScreenState();
@@ -1077,6 +1184,10 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   double highlightOpacity = 1.0;
   String? _lastBlockIdForLink;
   int? _viewCaretOffset;
+  int? _pendingInsertBlockIndex;
+  int? _pendingInsertCaretOffset;
+
+  late ScrollController _detailScrollController;
 
 
   String? selectedText;
@@ -1092,28 +1203,35 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     titleController = TextEditingController(text: widget.note.title);
     highlightQuery = widget.highlightQuery?.toLowerCase();
 
+    _detailScrollController = ScrollController();
+
     // 👇 Handle fade + scroll only once
     if (highlightQuery != null && highlightQuery!.isNotEmpty) {
-      // ✅ Run scroll after the frame, safely inside ListView’s build context
       WidgetsBinding.instance.addPostFrameCallback((_) {
         final primaryScrollController = PrimaryScrollController.of(context);
         if (primaryScrollController.hasClients) {
+          // 🎯 Scroll directly to match index if available
+          final offset = widget.scrollToMatchIndex != null
+              ? (widget.scrollToMatchIndex! * 12.0)
+                  .clamp(0.0, primaryScrollController.position.maxScrollExtent)
+                  .toDouble() // ✅ fix: convert num → double
+              : 200.0;
+
           primaryScrollController.animateTo(
-            200,
-            duration: const Duration(milliseconds: 500),
-            curve: Curves.easeOut,
+            offset,
+            duration: const Duration(milliseconds: 600),
+            curve: Curves.easeOutCubic,
           );
         }
       });
 
-      // ✅ Fade only the color (not remove the text)
+      // ✅ Fade highlight color after a short delay
       Future.delayed(const Duration(seconds: 3), () {
         if (mounted) {
           setState(() => highlightOpacity = 0.0);
         }
       });
     }
-
 
     // Load or fallback
     if (widget.note.contentBlocks.isNotEmpty) {
@@ -1128,7 +1246,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       widget.note.save();
     }
 
-    // Legacy map links → list of maps
+    // 🧠 Legacy link migration
     if (widget.note.links is Map) {
       final oldLinks = (widget.note.links as Map).entries.map((e) {
         return {
@@ -1145,6 +1263,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
     _attachControllers();
   }
+
 
 
   void _wireTextBlock(Map<String, dynamic> b) {
@@ -1240,6 +1359,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
   @override
   void dispose() {
+    _detailScrollController.dispose();
     for (final b in blocks) {
       if (b['type'] == 'text') {
         (b['controller'] as TextEditingController?)?.dispose();
@@ -1326,45 +1446,103 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     final picked = await picker.pickImage(source: source);
     if (picked == null) return;
 
-    // 🗂️ Persist image safely for both camera & gallery
+    // 🗂️ Save image safely (camera/gallery)
     final dir = await getApplicationDocumentsDirectory();
-    final fileExt = picked.path.split('.').last;
-    final newPath = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$fileExt';
+    final ext = picked.path.split('.').last;
+    final newPath = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.$ext';
     final newFile = File(newPath);
+    await newFile.writeAsBytes(await picked.readAsBytes());
 
-    try {
-      final bytes = await picked.readAsBytes();
-      await newFile.writeAsBytes(bytes);
-    } catch (_) {
-      return;
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    // 🧠 Use pending snapshot (from _showImageOptions) to restore caret position
+    int? targetBlock = _pendingInsertBlockIndex;
+    int? caretOffset = _pendingInsertCaretOffset;
+
+    // clear pending snapshot after use
+    _pendingInsertBlockIndex = null;
+    _pendingInsertCaretOffset = null;
+
+    // fallback if snapshot missing
+    if (targetBlock == null ||
+        targetBlock < 0 ||
+        targetBlock >= blocks.length ||
+        blocks[targetBlock]['type'] != 'text') {
+      targetBlock = blocks.lastIndexWhere((b) => b['type'] == 'text');
+      if (targetBlock == -1) targetBlock = null;
     }
 
-    await Future.delayed(const Duration(milliseconds: 200));
+    // ensure at least one text block
+    if (targetBlock == null) {
+      if (blocks.isEmpty) {
+        final newText = {
+          "id": const Uuid().v4(),
+          "type": "text",
+          "content": "",
+          "controller": TextEditingController(),
+          "focusNode": FocusNode(),
+          "_wired": false,
+        };
+        _wireTextBlock(newText);
+        setState(() => blocks.add(newText));
+        targetBlock = 0;
+      } else {
+        targetBlock = blocks.length - 1;
+      }
+    }
 
-    // 🧩 Ensure there’s at least one valid text block
-    if (blocks.isEmpty) {
+    // ✂️ Split text at caret position
+    final b = blocks[targetBlock];
+    if (b['type'] == 'text' && b['controller'] is TextEditingController) {
+      final ctrl = b['controller'] as TextEditingController;
+      final text = ctrl.text;
+      final caret = (caretOffset ?? ctrl.selection.baseOffset).clamp(0, text.length);
+      final beforeText = text.substring(0, caret);
+      final afterText = text.substring(caret);
+
+      ctrl.text = beforeText;
+      b['content'] = beforeText;
+
+      final newImageBlock = {
+        "id": const Uuid().v4(),
+        "type": "image",
+        "path": newFile.path,
+      };
       final newTextBlock = {
         "id": const Uuid().v4(),
         "type": "text",
-        "content": "",
-        "controller": TextEditingController(),
+        "content": afterText,
+        "controller": TextEditingController(text: afterText),
         "focusNode": FocusNode(),
         "_wired": false,
       };
       _wireTextBlock(newTextBlock);
-      setState(() {
-        blocks.add(newTextBlock);
-        selectedBlockIndex = 0;
-      });
-    }
 
-    // 🧠 Ensure we target a valid text block
-    if (selectedBlockIndex == null ||
-        selectedBlockIndex! < 0 ||
-        selectedBlockIndex! >= blocks.length ||
-        blocks[selectedBlockIndex!]['type'] != 'text') {
-      selectedBlockIndex = blocks.lastIndexWhere((b) => b['type'] == 'text');
-      if (selectedBlockIndex == -1) {
+      // ✅ Insert image + new text immediately after caret
+      setState(() {
+        final idx = blocks.indexOf(b);
+        blocks.insert(idx + 1, newImageBlock);
+        blocks.insert(idx + 2, newTextBlock);
+      });
+
+      // focus the new text block automatically
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          (newTextBlock['focusNode'] as FocusNode?)?.requestFocus();
+          final ctrl2 = newTextBlock['controller'] as TextEditingController?;
+          if (ctrl2 != null) {
+            ctrl2.selection = const TextSelection.collapsed(offset: 0);
+          }
+        } catch (_) {}
+      });
+    } else {
+      // if no valid text block, just append image + empty text
+      setState(() {
+        blocks.add({
+          "id": const Uuid().v4(),
+          "type": "image",
+          "path": newFile.path,
+        });
         final newTextBlock = {
           "id": const Uuid().v4(),
           "type": "text",
@@ -1374,58 +1552,25 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
           "_wired": false,
         };
         _wireTextBlock(newTextBlock);
-        setState(() {
-          blocks.add(newTextBlock);
-          selectedBlockIndex = blocks.length - 1;
-        });
-      }
-    }
-
-    if (selectedBlockIndex == null ||
-        selectedBlockIndex! < 0 ||
-        selectedBlockIndex! >= blocks.length) return;
-
-    final block = blocks[selectedBlockIndex!];
-    int insertAt = selectedBlockIndex! + 1;
-    String? afterText = "";
-
-    // 🧩 Split text if caret exists
-    if (block['type'] == 'text' &&
-        block['controller'] is TextEditingController) {
-      final ctrl = block['controller'] as TextEditingController;
-      final text = ctrl.text;
-      final caret = ctrl.selection.baseOffset.clamp(0, text.length);
-      afterText = text.substring(caret);
-      ctrl.text = text.substring(0, caret);
-      block['content'] = ctrl.text;
-    }
-
-    setState(() {
-      // 🖼️ Insert image (don't immediately save)
-      blocks.insert(insertAt, {
-        "id": const Uuid().v4(),
-        "type": "image",
-        "path": newFile.path,
+        blocks.add(newTextBlock);
       });
+    }
 
-      // 🧱 Add editable block after image
-      final newTextBlock = {
-        "id": const Uuid().v4(),
-        "type": "text",
-        "content": afterText ?? "",
-        "controller": TextEditingController(text: afterText ?? ""),
-        "focusNode": FocusNode(),
-        "_wired": false,
-      };
-      blocks.insert(insertAt + 1, newTextBlock);
-      _wireTextBlock(newTextBlock);
-    });
-
-    // ✅ Delay save a bit for camera write completion
+    // 🧠 Save safely after rebuild
     await Future.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
-
     _safeSave(widget.note);
+
+    // 🔽 Smooth scroll to show the new image
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_detailScrollController.hasClients) {
+        _detailScrollController.animateTo(
+          _detailScrollController.position.maxScrollExtent + 200,
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
 
@@ -1434,6 +1579,26 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
 
   void _showImageOptions() {
+    // snapshot current caret & block so bottom sheet won't lose it
+    try {
+      if (selectedBlockIndex != null &&
+          selectedBlockIndex! >= 0 &&
+          selectedBlockIndex! < blocks.length &&
+          blocks[selectedBlockIndex!]['type'] == 'text' &&
+          blocks[selectedBlockIndex!]['controller'] is TextEditingController) {
+        final ctrl = blocks[selectedBlockIndex!]['controller'] as TextEditingController;
+        _pendingInsertBlockIndex = selectedBlockIndex;
+        _pendingInsertCaretOffset = ctrl.selection.baseOffset.clamp(0, ctrl.text.length);
+      } else {
+        _pendingInsertBlockIndex = blocks.lastIndexWhere((b) => b['type'] == 'text');
+        if (_pendingInsertBlockIndex == -1) _pendingInsertBlockIndex = null;
+        _pendingInsertCaretOffset = null;
+      }
+    } catch (_) {
+      _pendingInsertBlockIndex = null;
+      _pendingInsertCaretOffset = null;
+    }
+
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.grey[900],
@@ -1443,10 +1608,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
           children: [
             ListTile(
               leading: const Icon(Icons.camera_alt, color: Colors.white54),
-              title: const Text(
-                "Take Photo",
-                style: TextStyle(color: Colors.white54),
-              ),
+              title: const Text("Take Photo", style: TextStyle(color: Colors.white54)),
               onTap: () {
                 Navigator.pop(context);
                 _pickImage(ImageSource.camera);
@@ -1454,10 +1616,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
             ),
             ListTile(
               leading: const Icon(Icons.photo, color: Colors.white54),
-              title: const Text(
-                "Choose from Gallery",
-                style: TextStyle(color: Colors.white54),
-              ),
+              title: const Text("Choose from Gallery", style: TextStyle(color: Colors.white54)),
               onTap: () {
                 Navigator.pop(context);
                 _pickImage(ImageSource.gallery);
@@ -1511,6 +1670,16 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     final spans = <InlineSpan>[];
     int cursor = 0;
     final query = highlightQuery?.toLowerCase() ?? '';
+
+    // 🧹 Clean up dead links before rendering
+    final notesBox = Hive.box<Note>('notesBox_v2');
+    widget.note.links.removeWhere((l) {
+      final id = int.tryParse(l["noteId"] ?? "");
+      if (id == null) return true;
+      return !notesBox.containsKey(id); // remove if linked note no longer exists
+    });
+    widget.note.save();
+
     final ranges = _rangesForBlock(text, blockIndex);
 
     void addNormalSpan(String chunk) {
@@ -1940,92 +2109,126 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
             ),
         ],
       ),
-      body: ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: blocks.length,
-        itemBuilder: (context, i) {
-          final b = blocks[i];
-          if (b['type'] == 'text') {
-            // Safety: ensure controller/focus/listeners exist
-            if (!(b['_wired'] == true)) {
-              _wireTextBlock(b);
-            }
-            final ctrl = (b['controller'] as TextEditingController);
-            final foc = (b['focusNode'] as FocusNode);
+      body: NotificationListener<ScrollNotification>(
+              onNotification: (notification) {
+                // 🧠 Only unfocus when NOT editing — avoids keyboard flicker below images
+                if (!isEditingDescription && notification is ScrollUpdateNotification) {
+                  FocusScope.of(context).unfocus();
+                }
+                return false;
+              },
+              child: ListView.builder(
+                controller: _detailScrollController,
+                padding: const EdgeInsets.all(16),
+                itemCount: blocks.length,
+                itemBuilder: (context, i) {
+                  final b = blocks[i];
+                  if (b['type'] == 'text') {
+                    // Safety: ensure controller/focus/listeners exist
+                    if (!(b['_wired'] == true)) {
+                      _wireTextBlock(b);
+                    }
+                    final ctrl = (b['controller'] as TextEditingController);
+                    final foc = (b['focusNode'] as FocusNode);
 
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: isEditingDescription
-                  ? TextField(
-                      controller: ctrl,
-                      focusNode: foc,
-                      maxLines: null,
-                      style: kBaseTextStyle,
-                      decoration: InputDecoration(
-                        border: InputBorder.none,
-                        hintText: _shouldShowHintForBlock(i) ? "Description…" : null,
-                        hintStyle: TextStyle(color: Colors.grey),
-                      ),
-                      onTap: () => setState(() => selectedBlockIndex = i),
-                    )
-                  : RichText(
-                      text: TextSpan(
-                        children: _buildDescriptionSpans(b['content'] ?? '', i),
-                      ),
-                      textAlign: TextAlign.left,
-                    ),
-            );
-          } else if (b['type'] == 'image') {
-            final file = File(b['path']);
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Image.file(
-                      file,
-                      width: double.infinity,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: isEditingDescription
+                          ? TextField(
+                              controller: ctrl,
+                              focusNode: foc,
+                              maxLines: null,
+                              style: kBaseTextStyle,
+                              decoration: InputDecoration(
+                                border: InputBorder.none,
+                                hintText:
+                                    _shouldShowHintForBlock(i) ? "Description…" : null,
+                                hintStyle: const TextStyle(color: Colors.grey),
+                              ),
+                              onTap: () =>
+                                  setState(() => selectedBlockIndex = i),
+                            )
+                          : RichText(
+                              text: TextSpan(
+                                children:
+                                    _buildDescriptionSpans(b['content'] ?? '', i),
+                              ),
+                              textAlign: TextAlign.left,
+                            ),
+                    );
+                  } else if (b['type'] == 'image') {
+                    final file = File(b['path']);
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: RepaintBoundary(
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.file(
+                                file,
+                                width: double.infinity,
+                                fit: BoxFit.cover,
+                                filterQuality:
+                                    FilterQuality.low, // ⚡ smoother scroll
+                                cacheWidth: 800, // optimize decode size
+                              ),
+                            ),
 
-                  // ❌ Delete icon — visible only in edit mode
-                  if (isEditingDescription)
-                    Positioned(
-                      top: 4,
-                      right: 4,
-                      child: IconButton(
-                        icon: const Icon(Icons.close,
-                            color: Colors.red, size: 22),
-                        onPressed: () {
-                          setState(() {
-                            blocks.removeAt(i);
-                            _safeSave(widget.note);
-                          });
-                        },
-                      ),
-                    ),
+                            // ❌ Delete icon — visible only in edit mode
+                            if (isEditingDescription)
+                              Positioned(
+                                top: 4,
+                                right: 4,
+                                child: IconButton(
+                                  icon: const Icon(Icons.close,
+                                      color: Colors.red, size: 22),
+                                  onPressed: () {
+                                    setState(() {
+                                      // 🗑️ Remove the image block
+                                      blocks.removeAt(i);
 
-                  // 🔍 Fullscreen icon — visible only when NOT editing
-                  if (!isEditingDescription)
-                    Positioned(
-                      top: 4,
-                      right: 4,
-                      child: IconButton(
-                        icon: const Icon(Icons.fullscreen,
-                            color: Colors.white70, size: 24),
-                        onPressed: () => _openFullScreenImage(file),
+                                      // 🧹 Clean up empty text blocks near deleted image
+                                      if (i < blocks.length &&
+                                          blocks[i]['type'] == 'text') {
+                                        final nextText =
+                                            (blocks[i]['content'] ?? '').trim();
+                                        if (nextText.isEmpty) blocks.removeAt(i);
+                                      } else if (i - 1 >= 0 &&
+                                          blocks[i - 1]['type'] == 'text') {
+                                        final prevText =
+                                            (blocks[i - 1]['content'] ?? '').trim();
+                                        if (prevText.isEmpty)
+                                          blocks.removeAt(i - 1);
+                                      }
+
+                                      _safeSave(widget.note);
+                                    });
+                                  },
+                                ),
+                              ),
+
+                            // 🔍 Fullscreen icon — visible only when NOT editing
+                            if (!isEditingDescription)
+                              Positioned(
+                                top: 4,
+                                right: 4,
+                                child: IconButton(
+                                  icon: const Icon(Icons.fullscreen,
+                                      color: Colors.white70, size: 24),
+                                  onPressed: () => _openFullScreenImage(file),
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
-                    ),
-                ],
+                    );
+                  }
+                  return const SizedBox.shrink();
+                },
               ),
-            );
-          }
-          return const SizedBox.shrink();
-        },
-      ),
+            ),
       floatingActionButton: FloatingActionButton(
         backgroundColor: const Color(0xFF4B0082),
         onPressed: () {
@@ -2053,14 +2256,26 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   }
 
   bool _shouldShowHintForBlock(int index) {
-    // Show "Description…" only for the first text block
-    // and only if the previous block is not an image.
-    if (index == 0) return true;
-    final prev = (index > 0) ? blocks[index - 1] : null;
-    if (prev == null) return true;
+    // Show "Description…" only if:
+    // 1️⃣ It's the very first text block,
+    // 2️⃣ AND the note is empty or no other non-empty text exists before it.
+    if (index == 0) return blocks[index]['content'].toString().trim().isEmpty;
+
+    // 🧠 Never show hint for text blocks after an image or any other text
+    final prev = index > 0 ? blocks[index - 1] : null;
+    if (prev == null) return false;
     if (prev['type'] == 'image') return false;
-    return true;
+
+    // Only show if all previous text blocks are empty
+    for (int i = 0; i < index; i++) {
+      if (blocks[i]['type'] == 'text' &&
+          (blocks[i]['content']?.toString().trim().isNotEmpty ?? false)) {
+        return false;
+      }
+    }
+    return blocks[index]['content'].toString().trim().isEmpty;
   }
+
 
 
 
