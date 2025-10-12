@@ -248,7 +248,7 @@ class _NotesHomeState extends State<NotesHome> {
                           title: Text(
                             note.title,
                             style: const TextStyle(
-                              color: Colors.white54,
+                              color: Colors.white,
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
                             ),
@@ -317,6 +317,7 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
   final TextEditingController searchController = TextEditingController();
   List<Note> allNotes = [];
   List<Map<String, dynamic>> results = [];
+  String? fadedHighlight; // <-- to track when highlight should fade
 
   @override
   void initState() {
@@ -341,10 +342,8 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
           "context": note.title,
         });
       } else if (desc.contains(lower)) {
-        // find a snippet containing the word
         final idx = desc.indexOf(lower);
         if (idx != -1) {
-          // capture sentence snippet around it
           final full = note.description!;
           int start = full.lastIndexOf('.', idx) + 1;
           if (start < 0) start = 0;
@@ -362,14 +361,27 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
       }
     }
 
-    // Prioritize title matches, then by relevance
     matches.sort((a, b) {
       if (a["matchType"] == "title" && b["matchType"] != "title") return -1;
       if (a["matchType"] != "title" && b["matchType"] == "title") return 1;
       return a["context"].toString().compareTo(b["context"].toString());
     });
 
-    setState(() => results = matches);
+    setState(() {
+      results = matches;
+      fadedHighlight = null; // reset fade timer
+    });
+
+    // After 3 seconds, remove highlight color but keep text
+    if (query.isNotEmpty) {
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted && searchController.text == query) {
+          setState(() {
+            fadedHighlight = query; // trigger fade for this query
+          });
+        }
+      });
+    }
   }
 
   @override
@@ -403,21 +415,26 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
                 final highlight = match["highlight"] as String;
                 final contextText = match["context"] as String;
 
-                // build highlight span
                 final lower = contextText.toLowerCase();
                 final idx = lower.indexOf(highlight.toLowerCase());
 
                 InlineSpan textSpan;
                 if (idx != -1) {
+                  final isFaded = fadedHighlight == highlight;
                   textSpan = TextSpan(children: [
                     TextSpan(
                         text: contextText.substring(0, idx),
                         style: const TextStyle(color: Colors.white54)),
                     TextSpan(
-                        text: contextText.substring(idx, idx + highlight.length),
-                        style: const TextStyle(
-                            color: Color(0xFF9B30FF),
-                            fontWeight: FontWeight.bold)),
+                      text: contextText.substring(idx, idx + highlight.length),
+                      style: TextStyle(
+                        color: isFaded
+                            ? Colors.white54 // normal text after fade
+                            : const Color(0xFF9B30FF), // highlight color
+                        fontWeight:
+                            isFaded ? FontWeight.normal : FontWeight.bold,
+                      ),
+                    ),
                     TextSpan(
                         text: contextText.substring(idx + highlight.length),
                         style: const TextStyle(color: Colors.white54)),
@@ -1001,22 +1018,26 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
     // 👇 Handle fade + scroll only once
     if (highlightQuery != null && highlightQuery!.isNotEmpty) {
-      // Scroll to first match
+      // ✅ Run scroll after the frame, safely inside ListView’s build context
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        final scrollable = Scrollable.of(context);
-        scrollable?.position.animateTo(
-          200,
-          duration: const Duration(milliseconds: 500),
-          curve: Curves.easeOut,
-        );
+        final primaryScrollController = PrimaryScrollController.of(context);
+        if (primaryScrollController.hasClients) {
+          primaryScrollController.animateTo(
+            200,
+            duration: const Duration(milliseconds: 500),
+            curve: Curves.easeOut,
+          );
+        }
       });
 
-      // ✅ Only fade highlight color (not remove query)
-      Future.delayed(const Duration(seconds: 5), () {
-        if (!mounted) return;
-        setState(() => highlightOpacity = 0.0);
+      // ✅ Fade only the color (not remove the text)
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) {
+          setState(() => highlightOpacity = 0.0);
+        }
       });
     }
+
 
     // Load or fallback
     if (widget.note.contentBlocks.isNotEmpty) {
@@ -1413,9 +1434,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   List<InlineSpan> _buildDescriptionSpans(String text, int blockIndex) {
     final spans = <InlineSpan>[];
     int cursor = 0;
-    final lower = text.toLowerCase();
     final query = highlightQuery?.toLowerCase() ?? '';
-
     final ranges = _rangesForBlock(text, blockIndex);
 
     void addNormalSpan(String chunk) {
@@ -1428,15 +1447,25 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
               style: const TextStyle(color: Colors.white54, fontSize: 16),
             ));
           }
-          // 👇 Highlight color fades out using highlightOpacity
+
+          // 🌈 Smooth background fade (true highlighter effect, no lift)
+          final bool isFaded = highlightOpacity <= 0.01;
+          final double opacity = isFaded ? 0.0 : highlightOpacity;
+          final bgPaint = Paint()
+            ..color = const Color(0xFF9B30FF).withOpacity(opacity * 0.35)
+            ..style = PaintingStyle.fill;
+
           spans.add(TextSpan(
             text: chunk.substring(idx, idx + query.length),
             style: TextStyle(
-              color: const Color(0xFF9B30FF).withOpacity(highlightOpacity),
-              fontWeight: FontWeight.bold,
+              color: Colors.white54,
+              background: bgPaint,
+              fontWeight: FontWeight.normal,
               fontSize: 16,
+              height: 1.4,
             ),
           ));
+
           start = idx + query.length;
         }
         if (start < chunk.length) {
@@ -1457,9 +1486,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       final rStart = r["startInt"] as int;
       final rEnd = r["endInt"] as int;
 
-      if (rStart > cursor) {
-        addNormalSpan(text.substring(cursor, rStart));
-      }
+      if (rStart > cursor) addNormalSpan(text.substring(cursor, rStart));
 
       final slice = text.substring(rStart, rEnd);
       final noteIdStr = (r["noteId"] ?? '').toString();
@@ -1510,9 +1537,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       cursor = rEnd;
     }
 
-    if (cursor < text.length) {
-      addNormalSpan(text.substring(cursor));
-    }
+    if (cursor < text.length) addNormalSpan(text.substring(cursor));
 
     return spans;
   }
