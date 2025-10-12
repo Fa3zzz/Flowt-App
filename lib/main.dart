@@ -101,8 +101,6 @@ class Note extends HiveObject {
         lastModified = lastModified ?? DateTime.now();
 }
 
-
-
 class NotesHome extends StatefulWidget {
   const NotesHome({super.key});
 
@@ -232,10 +230,11 @@ class _NotesHomeState extends State<NotesHome> {
                       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                       child: Text(
                         sectionTitle,
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          fontSize: (sectionTitle == "Today" || sectionTitle == "Yesterday") ? 28 : 24,
+                          letterSpacing: 0.5,
                         ),
                       ),
                     ),
@@ -258,60 +257,76 @@ class _NotesHomeState extends State<NotesHome> {
                       child: Column(
                         children: [
                           for (int i = 0; i < sectionNotes.length; i++) ...[
-                            ListTile(
-                              dense: true,
-                              contentPadding:
-                                  const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                              title: Text(
-                                sectionNotes[i].title,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                            Dismissible(
+                              key: ValueKey(sectionNotes[i].key),
+                              direction: DismissDirection.endToStart,
+                              background: Container(
+                                color: Colors.redAccent,
+                                alignment: Alignment.centerRight,
+                                padding: const EdgeInsets.symmetric(horizontal: 20),
+                                child: const Icon(Icons.delete, color: Colors.white),
                               ),
-                              subtitle: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (sectionTitle == "2024" ||
-                                      int.tryParse(sectionTitle) != null)
-                                    Padding(
-                                      padding: const EdgeInsets.only(right: 6),
-                                      child: Text(
-                                        "${sectionNotes[i].lastModified.day} ${_monthNameList[sectionNotes[i].lastModified.month - 1]}",
-                                        style: const TextStyle(
-                                            color: Colors.white38, fontSize: 13),
-                                      ),
-                                    ),
-                                  Expanded(
-                                    child: sectionNotes[i].description != null &&
-                                            sectionNotes[i].description!.isNotEmpty
-                                        ? Text(
-                                            sectionNotes[i].description!,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style:
-                                                const TextStyle(color: Colors.white38),
-                                          )
-                                        : const SizedBox.shrink(),
-                                  ),
-                                ],
-                              ),
-                              onTap: () async {
-                                final updatedNote = await Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) =>
-                                        NoteDetailScreen(note: sectionNotes[i]),
+                              onDismissed: (_) async {
+                                await Future.delayed(const Duration(milliseconds: 100));
+                                sectionNotes[i].delete();
+
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Note deleted'),
+                                    duration: Duration(seconds: 1),
                                   ),
                                 );
-                                if (updatedNote != null) {
-                                  sectionNotes[i].title = updatedNote.title;
-                                  sectionNotes[i].description =
-                                      updatedNote.description;
-                                  sectionNotes[i].save();
-                                }
                               },
+                              child: ListTile(
+                                dense: true,
+                                contentPadding:
+                                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                                title: Text(
+                                  sectionNotes[i].title,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                subtitle: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (sectionTitle == "2024" || int.tryParse(sectionTitle) != null)
+                                      Padding(
+                                        padding: const EdgeInsets.only(right: 6),
+                                        child: Text(
+                                          "${sectionNotes[i].lastModified.day} ${_monthNameList[sectionNotes[i].lastModified.month - 1]}",
+                                          style: const TextStyle(color: Colors.white38, fontSize: 13),
+                                        ),
+                                      ),
+                                    Expanded(
+                                      child: sectionNotes[i].description != null &&
+                                              sectionNotes[i].description!.isNotEmpty
+                                          ? Text(
+                                              sectionNotes[i].description!,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(color: Colors.white38),
+                                            )
+                                          : const SizedBox.shrink(),
+                                    ),
+                                  ],
+                                ),
+                                onTap: () async {
+                                  final updatedNote = await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (context) => NoteDetailScreen(note: sectionNotes[i]),
+                                    ),
+                                  );
+                                  if (updatedNote != null) {
+                                    sectionNotes[i].title = updatedNote.title;
+                                    sectionNotes[i].description = updatedNote.description;
+                                    sectionNotes[i].save();
+                                  }
+                                },
+                              ),
                             ),
 
                             // Divider line (except after last note)
@@ -319,8 +334,7 @@ class _NotesHomeState extends State<NotesHome> {
                               Container(
                                 height: 0.6,
                                 color: Colors.white38,
-                                margin:
-                                    const EdgeInsets.symmetric(horizontal: 16),
+                                margin: const EdgeInsets.symmetric(horizontal: 16),
                               ),
                           ],
                         ],
@@ -414,16 +428,21 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
 
     setState(() {
       results = matches;
-      fadedHighlight = null; // reset fade timer
+      fadedHighlight = null; // reset fade state
     });
 
-    // After 3 seconds, remove highlight color but keep text
+    // 🎨 Smooth fade-out instead of instant drop
     if (query.isNotEmpty) {
-      Future.delayed(const Duration(seconds: 3), () {
-        if (mounted && searchController.text == query) {
-          setState(() {
-            fadedHighlight = query; // trigger fade for this query
-          });
+      double opacity = 1.0;
+      const fadeDuration = Duration(seconds: 2);
+      const steps = 20;
+      final stepTime = fadeDuration.inMilliseconds ~/ steps;
+
+      Future.delayed(const Duration(seconds: 1), () async {
+        for (int i = 0; i <= steps; i++) {
+          await Future.delayed(Duration(milliseconds: stepTime));
+          if (!mounted || searchController.text != query) return;
+          setState(() => fadedHighlight = "$query|${1 - (i / steps)}");
         }
       });
     }
@@ -462,33 +481,40 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
 
                 final lower = contextText.toLowerCase();
                 final idx = lower.indexOf(highlight.toLowerCase());
-
                 InlineSpan textSpan;
+
                 if (idx != -1) {
-                  final isFaded = fadedHighlight == highlight;
+                  // Extract opacity from fadedHighlight (e.g., "query|0.6")
+                  double fadeValue = 1.0;
+                  if (fadedHighlight != null && fadedHighlight!.startsWith(highlight)) {
+                    final parts = fadedHighlight!.split('|');
+                    if (parts.length == 2) fadeValue = double.tryParse(parts[1]) ?? 1.0;
+                  }
+
                   textSpan = TextSpan(children: [
                     TextSpan(
-                        text: contextText.substring(0, idx),
-                        style: const TextStyle(color: Colors.white54)),
+                      text: contextText.substring(0, idx),
+                      style: const TextStyle(color: Colors.white54),
+                    ),
                     TextSpan(
                       text: contextText.substring(idx, idx + highlight.length),
                       style: TextStyle(
-                        color: isFaded
-                            ? Colors.white54 // normal text after fade
-                            : const Color(0xFF9B30FF), // highlight color
-                        fontWeight:
-                            isFaded ? FontWeight.normal : FontWeight.bold,
+                        color: Color.lerp(const Color(0xFF9B30FF), Colors.white54, 1 - fadeValue),
+                        fontWeight: FontWeight.normal,
                       ),
                     ),
                     TextSpan(
-                        text: contextText.substring(idx + highlight.length),
-                        style: const TextStyle(color: Colors.white54)),
+                      text: contextText.substring(idx + highlight.length),
+                      style: const TextStyle(color: Colors.white54),
+                    ),
                   ]);
                 } else {
                   textSpan = TextSpan(
-                      text: contextText,
-                      style: const TextStyle(color: Colors.white54));
+                    text: contextText,
+                    style: const TextStyle(color: Colors.white54),
+                  );
                 }
+
 
                 return Card(
                   color: Colors.grey[900],
@@ -840,12 +866,17 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
                         });
                         Navigator.pop(context);
 
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Linked to "${n.title}"'),
-                            duration: const Duration(seconds: 1),
-                          ),
-                        );
+                        if (!mounted) return;
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Linked successfully'),
+                                duration: Duration(seconds: 1),
+                              ),
+                            );
+                          }
+                        });
                       },
                     );
                   },
@@ -1543,11 +1574,12 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
           baseline: TextBaseline.alphabetic,
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
-            onTap: () {
+            onTap: () async {
+              // 🪄 Normal tap → open linked note
               final id = int.tryParse(noteIdStr);
-              if (id != null) {
+              if (!isEditingDescription && id != null) {
                 final target = Hive.box<Note>('notesBox_v2').get(id);
-                if (target != null) {
+                if (target != null && mounted) {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
@@ -1558,19 +1590,20 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
               }
             },
             onLongPress: () async {
+              // 🧠 Long-press works in BOTH edit and view mode → show unlink
               setState(() {
                 selectedText = slice;
                 selectedBlockIndex = blockIndex;
                 selectedStart = rStart;
                 selectedEnd = rEnd;
               });
+              await Future.delayed(const Duration(milliseconds: 60));
               await _showLinkOptions(slice, presetLinkId: linkId);
             },
             child: Text(
               slice,
               style: const TextStyle(
                 color: Color(0xFF9B30FF),
-                decoration: TextDecoration.underline,
                 fontSize: 16,
                 height: 1.3,
               ),
@@ -1592,8 +1625,9 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
 
   Future<void> _showLinkOptions(String selected, {String? presetLinkId}) async {
-    if (selectedBlockIndex == null || selectedStart == null || selectedEnd == null) {
-      ScaffoldMessenger.of(context) 
+    if ((selectedBlockIndex == null || selectedStart == null || selectedEnd == null) &&
+        (presetLinkId == null || presetLinkId.isEmpty)) {
+      ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Select text to link')));
       return;
     }
@@ -1687,6 +1721,17 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                 });
 
                 _safeSave(widget.note);
+                FocusScope.of(context).unfocus(); // 👈 ensures keyboard hides first
+                await Future.delayed(const Duration(milliseconds: 200));
+
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('New linked note "${cleanSelected}" created'),
+                      duration: const Duration(seconds: 1),
+                    ),
+                  );
+                }
                 setState(() => isEditingDescription = false);
 
                 Navigator.push(
@@ -1850,189 +1895,173 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
 
 
-@override
-Widget build(BuildContext context) {
-  return Scaffold(
-    backgroundColor: Colors.black,
-    appBar: AppBar(
-      title: isEditingTitle
-          ? TextField(
-              controller: titleController,
-              autofocus: true,
-              style: kBaseTextStyle,
-              onSubmitted: (_) {
-                setState(() {
-                  isEditingTitle = false;
-                  widget.note.title = titleController.text.trim();
-                  widget.note.save();
-                });
-              },
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: isEditingTitle
+            ? TextField(
+                controller: titleController,
+                autofocus: true,
+                style: kBaseTextStyle,
+                onSubmitted: (_) {
+                  setState(() {
+                    isEditingTitle = false;
+                    widget.note.title = titleController.text.trim();
+                    widget.note.save();
+                  });
+                },
+              )
+            : GestureDetector(
+                onTap: () {
+                  setState(() {
+                    isEditingTitle = true;
+                    highlightQuery = null;
+                  });
+                },
+                child: Text(widget.note.title),
+              ),
+        actions: [
+          if (selectedText != null && isEditingDescription)
+            IconButton(
+              icon: const Icon(Icons.link, color: Colors.white54),
+              onPressed: () async => await _showLinkOptions(selectedText!),
             )
-          : GestureDetector(
-              onTap: () {
-                setState(() {
-                  isEditingTitle = true;
-                  highlightQuery = null;
-                });
-              },
-              child: Text(widget.note.title),
+          else if (isEditingDescription)
+            IconButton(
+              icon: const Icon(Icons.image_outlined, color: Colors.white54),
+              onPressed: _showImageOptions,
+            )
+          else
+            IconButton(
+              icon: const Icon(Icons.edit, color: Colors.white54),
+              onPressed: _enterEditMode,
             ),
-      actions: [
-        if (selectedText != null)
-          IconButton(
-            icon: const Icon(Icons.link, color: Colors.white54),
-            onPressed: () async => await _showLinkOptions(selectedText!),
-          )
-        else if (isEditingDescription)
-          IconButton(
-            icon: const Icon(Icons.image_outlined, color: Colors.white54),
-            onPressed: _showImageOptions,
-          )
-        else
-          IconButton(
-            icon: const Icon(Icons.edit, color: Colors.white54),
-            onPressed: _enterEditMode,
-          ),
-      ],
-    ),
-    body: ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: blocks.length,
-      itemBuilder: (context, i) {
-        final b = blocks[i];
-        if (b['type'] == 'text') {
-          // Safety: ensure controller/focus/listeners exist
-          if (!(b['_wired'] == true)) {
-            _wireTextBlock(b);
+        ],
+      ),
+      body: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: blocks.length,
+        itemBuilder: (context, i) {
+          final b = blocks[i];
+          if (b['type'] == 'text') {
+            // Safety: ensure controller/focus/listeners exist
+            if (!(b['_wired'] == true)) {
+              _wireTextBlock(b);
+            }
+            final ctrl = (b['controller'] as TextEditingController);
+            final foc = (b['focusNode'] as FocusNode);
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: isEditingDescription
+                  ? TextField(
+                      controller: ctrl,
+                      focusNode: foc,
+                      maxLines: null,
+                      style: kBaseTextStyle,
+                      decoration: InputDecoration(
+                        border: InputBorder.none,
+                        hintText: _shouldShowHintForBlock(i) ? "Description…" : null,
+                        hintStyle: TextStyle(color: Colors.grey),
+                      ),
+                      onTap: () => setState(() => selectedBlockIndex = i),
+                    )
+                  : RichText(
+                      text: TextSpan(
+                        children: _buildDescriptionSpans(b['content'] ?? '', i),
+                      ),
+                      textAlign: TextAlign.left,
+                    ),
+            );
+          } else if (b['type'] == 'image') {
+            final file = File(b['path']);
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.file(
+                      file,
+                      width: double.infinity,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+
+                  // ❌ Delete icon — visible only in edit mode
+                  if (isEditingDescription)
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: IconButton(
+                        icon: const Icon(Icons.close,
+                            color: Colors.red, size: 22),
+                        onPressed: () {
+                          setState(() {
+                            blocks.removeAt(i);
+                            _safeSave(widget.note);
+                          });
+                        },
+                      ),
+                    ),
+
+                  // 🔍 Fullscreen icon — visible only when NOT editing
+                  if (!isEditingDescription)
+                    Positioned(
+                      top: 4,
+                      right: 4,
+                      child: IconButton(
+                        icon: const Icon(Icons.fullscreen,
+                            color: Colors.white70, size: 24),
+                        onPressed: () => _openFullScreenImage(file),
+                      ),
+                    ),
+                ],
+              ),
+            );
           }
-          final ctrl = (b['controller'] as TextEditingController);
-          final foc = (b['focusNode'] as FocusNode);
+          return const SizedBox.shrink();
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: const Color(0xFF4B0082),
+        onPressed: () {
+          widget.note.title = titleController.text.trim();
+          widget.note.lastModified = DateTime.now(); // 🕒 update timestamp
+          _safeSave(widget.note);
+          widget.note.save(); // 💾 ensure Hive writes the change
 
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: isEditingDescription
-                ? TextField(
-                    controller: ctrl,
-                    focusNode: foc,
-                    maxLines: null,
-                    style: kBaseTextStyle,
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      hintText: "Description…",
-                      hintStyle: TextStyle(color: Colors.grey),
-                    ),
-                    onTap: () => setState(() => selectedBlockIndex = i),
-                  )
-                : SelectableText.rich(
-                    TextSpan(
-                      children: _buildDescriptionSpans(b['content'] ?? '', i),
-                    ),
-                    style: const TextStyle(color: Colors.white54, fontSize: 16),
-                    onSelectionChanged: (sel, cause) {
-                      final text = (b['content'] ?? '') as String;
+          setState(() {
+            isEditingTitle = false;
+            isEditingDescription = false;
+            selectedBlockIndex = null;
+            selectedStart = null;
+            selectedEnd = null;
+            selectedText = null;
+          });
 
-                      // Always remember which block was interacted with
-                      selectedBlockIndex = i;
-                      _lastBlockIdForLink = (b['id']?.toString() ?? '');
+          if (Navigator.canPop(context)) {
+            Navigator.pop(context, widget.note);
+          }
+        },
+        child: const Icon(Icons.check, color: Colors.white54),
+      ),
+    );
+  }
 
-                      if (sel.start == sel.end) {
-                        // 🧭 collapsed caret (single tap)
-                        setState(() {
-                          selectedText = null;
-                          selectedStart = sel.baseOffset;
-                          selectedEnd = sel.baseOffset;
-                          _viewCaretOffset = sel.baseOffset;
-                        });
-                      } else {
-                        // 📏 actual selection
-                        final (s, e) = _normalizedRange(text, sel.start, sel.end);
-                        setState(() {
-                          selectedText = text.substring(s, e);
-                          selectedStart = s;
-                          selectedEnd = e;
-                          _viewCaretOffset = e; // caret after selection
-                        });
-                      }
-                    },
-                  ),
+  bool _shouldShowHintForBlock(int index) {
+    // Show "Description…" only for the first text block
+    // and only if the previous block is not an image.
+    if (index == 0) return true;
+    final prev = (index > 0) ? blocks[index - 1] : null;
+    if (prev == null) return true;
+    if (prev['type'] == 'image') return false;
+    return true;
+  }
 
-          );
-        } else if (b['type'] == 'image') {
-          final file = File(b['path']);
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.file(
-                    file,
-                    width: double.infinity,
-                    fit: BoxFit.cover,
-                  ),
-                ),
-
-                // ❌ Delete icon — visible only in edit mode
-                if (isEditingDescription)
-                  Positioned(
-                    top: 4,
-                    right: 4,
-                    child: IconButton(
-                      icon: const Icon(Icons.close,
-                          color: Colors.red, size: 22),
-                      onPressed: () {
-                        setState(() {
-                          blocks.removeAt(i);
-                          _safeSave(widget.note);
-                        });
-                      },
-                    ),
-                  ),
-
-                // 🔍 Fullscreen icon — visible only when NOT editing
-                if (!isEditingDescription)
-                  Positioned(
-                    top: 4,
-                    right: 4,
-                    child: IconButton(
-                      icon: const Icon(Icons.fullscreen,
-                          color: Colors.white70, size: 24),
-                      onPressed: () => _openFullScreenImage(file),
-                    ),
-                  ),
-              ],
-            ),
-          );
-        }
-        return const SizedBox.shrink();
-      },
-    ),
-    floatingActionButton: FloatingActionButton(
-      backgroundColor: const Color(0xFF4B0082),
-      onPressed: () {
-        widget.note.title = titleController.text.trim();
-        widget.note.lastModified = DateTime.now(); // 🕒 update timestamp
-        _safeSave(widget.note);
-        widget.note.save(); // 💾 ensure Hive writes the change
-
-        setState(() {
-          isEditingTitle = false;
-          isEditingDescription = false;
-          selectedBlockIndex = null;
-          selectedStart = null;
-          selectedEnd = null;
-          selectedText = null;
-        });
-
-        if (Navigator.canPop(context)) {
-          Navigator.pop(context, widget.note);
-        }
-      },
-      child: const Icon(Icons.check, color: Colors.white54),
-    ),
-  );
-}
 
 
   void _openFullScreenImage(File file) {
