@@ -128,6 +128,30 @@ class _NotesHomeState extends State<NotesHome> {
     'December'
   ];
 
+  String _sectionLabel(DateTime noteDate) {
+    final now = DateTime.now();
+    final diff = now.difference(noteDate).inDays;
+
+    if (diff == 0 &&
+        noteDate.day == now.day &&
+        noteDate.month == now.month &&
+        noteDate.year == now.year) {
+      return "Today";
+    } else if (diff == 1 &&
+        noteDate.month == now.month &&
+        noteDate.year == now.year) {
+      return "Yesterday";
+    } else if (noteDate.year == now.year) {
+      if (noteDate.month == now.month) {
+        return _monthNameList[noteDate.month - 1]; // current month
+      } else {
+        return _monthNameList[noteDate.month - 1]; // past months this year
+      }
+    } else {
+      return noteDate.year.toString(); // older years (2024, etc.)
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -159,130 +183,154 @@ class _NotesHomeState extends State<NotesHome> {
             );
           }
 
-          // ✅ Sort notes by last modified (newest first)
+          // ✅ Sort newest first
           final notes = box.values.toList()
             ..sort((a, b) => b.lastModified.compareTo(a.lastModified));
 
-          // ✅ Group notes by date
+          // ✅ Group by section
           final Map<String, List<Note>> groupedNotes = {};
           for (var note in notes) {
-            final noteDate = note.lastModified;
-            final now = DateTime.now();
-            final diff = now.difference(noteDate).inDays;
-
-            String label;
-            if (diff == 0 &&
-                noteDate.day == now.day &&
-                noteDate.month == now.month &&
-                noteDate.year == now.year) {
-              label = "Today";
-            } else if (diff == 1 ||
-                (now.day - noteDate.day == 1 &&
-                    now.month == noteDate.month &&
-                    now.year == noteDate.year)) {
-              label = "Yesterday";
-            } else {
-              label = "${noteDate.day} ${_monthNameList[noteDate.month - 1]}, ${noteDate.year}";
-            }
-
+            final label = _sectionLabel(note.lastModified);
             groupedNotes.putIfAbsent(label, () => []).add(note);
           }
 
-          // ✅ Build sectioned list
-          // ✅ Sort section keys by recency (Today → Yesterday → older dates)
-          final orderedSections = groupedNotes.entries.toList()
+          // ✅ Order sections: Today → Yesterday → months → older years
+          final orderedKeys = groupedNotes.keys.toList()
             ..sort((a, b) {
-              DateTime parseLabel(String label) {
-                if (label == "Today") return DateTime.now();
-                if (label == "Yesterday") return DateTime.now().subtract(const Duration(days: 1));
-                final parts = label.replaceAll(',', '').split(' ');
-                final day = int.parse(parts[0]);
-                final month = _monthNameList.indexOf(parts[1]) + 1;
-                final year = int.parse(parts[2]);
-                return DateTime(year, month, day);
+              final now = DateTime.now();
+
+              DateTime getDate(String label) {
+                if (label == "Today") return now;
+                if (label == "Yesterday") return now.subtract(const Duration(days: 1));
+
+                final monthIndex = _monthNameList.indexOf(label);
+                if (monthIndex != -1) {
+                  final year = now.year;
+                  return DateTime(year, monthIndex + 1);
+                }
+
+                final yearNum = int.tryParse(label);
+                if (yearNum != null) return DateTime(yearNum);
+                return now;
               }
 
-              return parseLabel(b.key).compareTo(parseLabel(a.key));
+              return getDate(b).compareTo(getDate(a));
             });
 
-          return ListView(
-            padding: const EdgeInsets.only(bottom: 80),
-            children: orderedSections.map((entry) {
-              final sectionTitle = entry.key;
-              final sectionNotes = entry.value;
+            return ListView.builder(
+              padding: const EdgeInsets.only(bottom: 80),
+              itemCount: orderedKeys.length,
+              itemBuilder: (context, sectionIndex) {
+                final sectionTitle = orderedKeys[sectionIndex];
+                final sectionNotes = groupedNotes[sectionTitle]!;
 
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                    child: Text(
-                      sectionTitle,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 18,
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Section header
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                      child: Text(
+                        sectionTitle,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
                       ),
                     ),
-                  ),
-                  ...sectionNotes.map((note) {
-                    return Dismissible(
-                      key: Key(note.key.toString()),
-                      direction: DismissDirection.endToStart,
-                      background: Container(
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.symmetric(horizontal: 20),
-                        color: Colors.red,
-                        child: const Icon(Icons.delete, color: Colors.white),
-                      ),
-                      onDismissed: (_) => note.delete(),
-                      child: Card(
-                        margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
-                        color: Colors.grey[900],
-                        elevation: 2,
-                        shadowColor: Colors.deepPurple.withOpacity(0.3),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: ListTile(
-                          title: Text(
-                            note.title,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          subtitle: note.description != null && note.description!.isNotEmpty
-                              ? Text(
-                                  note.description!,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Colors.white38),
-                                )
-                              : null,
-                          onTap: () async {
-                            final updatedNote = await Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => NoteDetailScreen(note: note),
-                              ),
-                            );
 
-                            if (updatedNote != null) {
-                              note.title = updatedNote.title;
-                              note.description = updatedNote.description;
-                              note.save();
-                            }
-                          },
-                        ),
+                    // Group container (single block look)
+                    Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[900],
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.deepPurple.withAlpha((0.25 * 255).round()),
+                            blurRadius: 8,
+                            spreadRadius: 1,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
                       ),
-                    );
-                  }).toList(),
-                ],
-              );
-            }).toList(),
-          );
+                      child: Column(
+                        children: [
+                          for (int i = 0; i < sectionNotes.length; i++) ...[
+                            ListTile(
+                              dense: true,
+                              contentPadding:
+                                  const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                              title: Text(
+                                sectionNotes[i].title,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              subtitle: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (sectionTitle == "2024" ||
+                                      int.tryParse(sectionTitle) != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 6),
+                                      child: Text(
+                                        "${sectionNotes[i].lastModified.day} ${_monthNameList[sectionNotes[i].lastModified.month - 1]}",
+                                        style: const TextStyle(
+                                            color: Colors.white38, fontSize: 13),
+                                      ),
+                                    ),
+                                  Expanded(
+                                    child: sectionNotes[i].description != null &&
+                                            sectionNotes[i].description!.isNotEmpty
+                                        ? Text(
+                                            sectionNotes[i].description!,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style:
+                                                const TextStyle(color: Colors.white38),
+                                          )
+                                        : const SizedBox.shrink(),
+                                  ),
+                                ],
+                              ),
+                              onTap: () async {
+                                final updatedNote = await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) =>
+                                        NoteDetailScreen(note: sectionNotes[i]),
+                                  ),
+                                );
+                                if (updatedNote != null) {
+                                  sectionNotes[i].title = updatedNote.title;
+                                  sectionNotes[i].description =
+                                      updatedNote.description;
+                                  sectionNotes[i].save();
+                                }
+                              },
+                            ),
+
+                            // Divider line (except after last note)
+                            if (i < sectionNotes.length - 1)
+                              Container(
+                                height: 0.6,
+                                color: Colors.white38,
+                                margin:
+                                    const EdgeInsets.symmetric(horizontal: 16),
+                              ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+
         },
       ),
       floatingActionButton: FloatingActionButton(
@@ -297,10 +345,7 @@ class _NotesHomeState extends State<NotesHome> {
             notesBox.add(newNote);
           }
         },
-        child: const Icon(
-          Icons.add,
-          color: Colors.white54,
-        )
+        child: const Icon(Icons.add, color: Colors.white54),
       ),
     );
   }
