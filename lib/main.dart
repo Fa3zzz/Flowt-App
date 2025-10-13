@@ -1,11 +1,8 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
 import 'package:image_picker/image_picker.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:hive/hive.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
-import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 part 'main.g.dart';
@@ -140,13 +137,9 @@ class _NotesHomeState extends State<NotesHome> {
         noteDate.year == now.year) {
       return "Yesterday";
     } else if (noteDate.year == now.year) {
-      if (noteDate.month == now.month) {
-        return _monthNameList[noteDate.month - 1]; // current month
-      } else {
-        return _monthNameList[noteDate.month - 1]; // past months this year
-      }
+      return _monthNameList[noteDate.month - 1];
     } else {
-      return noteDate.year.toString(); // older years (2024, etc.)
+      return noteDate.year.toString();
     }
   }
 
@@ -181,32 +174,23 @@ class _NotesHomeState extends State<NotesHome> {
             );
           }
 
-          // ✅ Sort newest first
           final notes = box.values.toList()
             ..sort((a, b) => b.lastModified.compareTo(a.lastModified));
 
-          // ✅ Group by section
           final Map<String, List<Note>> groupedNotes = {};
           for (var note in notes) {
             final label = _sectionLabel(note.lastModified);
             groupedNotes.putIfAbsent(label, () => []).add(note);
           }
 
-          // ✅ Order sections: Today → Yesterday → months → older years
           final orderedKeys = groupedNotes.keys.toList()
             ..sort((a, b) {
               final now = DateTime.now();
-
               DateTime getDate(String label) {
                 if (label == "Today") return now;
                 if (label == "Yesterday") return now.subtract(const Duration(days: 1));
-
                 final monthIndex = _monthNameList.indexOf(label);
-                if (monthIndex != -1) {
-                  final year = now.year;
-                  return DateTime(year, monthIndex + 1);
-                }
-
+                if (monthIndex != -1) return DateTime(now.year, monthIndex + 1);
                 final yearNum = int.tryParse(label);
                 if (yearNum != null) return DateTime(yearNum);
                 return now;
@@ -215,136 +199,135 @@ class _NotesHomeState extends State<NotesHome> {
               return getDate(b).compareTo(getDate(a));
             });
 
-            return ListView.builder(
-              padding: const EdgeInsets.only(bottom: 80),
-              itemCount: orderedKeys.length,
-              itemBuilder: (context, sectionIndex) {
-                final sectionTitle = orderedKeys[sectionIndex];
-                final sectionNotes = groupedNotes[sectionTitle]!;
+          return ListView.builder(
+            padding: const EdgeInsets.only(bottom: 80),
+            itemCount: orderedKeys.length,
+            itemBuilder: (context, sectionIndex) {
+              final sectionTitle = orderedKeys[sectionIndex];
+              final sectionNotes = groupedNotes[sectionTitle]!;
 
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Section header
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                      child: Text(
-                        sectionTitle,
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w800,
-                          fontSize: (sectionTitle == "Today" || sectionTitle == "Yesterday") ? 28 : 24,
-                          letterSpacing: 0.5,
-                        ),
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                    child: Text(
+                      sectionTitle,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: (sectionTitle == "Today" || sectionTitle == "Yesterday")
+                            ? 28
+                            : 24,
+                        letterSpacing: 0.5,
                       ),
                     ),
-
-                    // Group container (single block look)
-                    Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 12),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[900],
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.deepPurple.withAlpha((0.25 * 255).round()),
-                            blurRadius: 8,
-                            spreadRadius: 1,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        children: [
-                          for (int i = 0; i < sectionNotes.length; i++) ...[
-                            Dismissible(
-                              key: ValueKey(sectionNotes[i].key),
-                              direction: DismissDirection.endToStart,
-                              background: Container(
-                                color: Colors.redAccent,
-                                alignment: Alignment.centerRight,
-                                padding: const EdgeInsets.symmetric(horizontal: 20),
-                                child: const Icon(Icons.delete, color: Colors.white),
+                  ),
+                  Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[900],
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.deepPurple.withOpacity(0.25),
+                          blurRadius: 8,
+                          spreadRadius: 1,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        for (int i = 0; i < sectionNotes.length; i++) ...[
+                          Dismissible(
+                            key: ValueKey(sectionNotes[i].key),
+                            direction: DismissDirection.endToStart,
+                            background: Container(
+                              color: Colors.redAccent,
+                              alignment: Alignment.centerRight,
+                              padding: const EdgeInsets.symmetric(horizontal: 20),
+                              child: const Icon(Icons.delete, color: Colors.white),
+                            ),
+                            onDismissed: (_) async {
+                              await Future.delayed(const Duration(milliseconds: 100));
+                              sectionNotes[i].delete();
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Note deleted'),
+                                  duration: Duration(seconds: 1),
+                                ),
+                              );
+                            },
+                            child: ListTile(
+                              dense: true,
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 4),
+                              title: Text(
+                                sectionNotes[i].title,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
-                              onDismissed: (_) async {
-                                await Future.delayed(const Duration(milliseconds: 100));
-                                sectionNotes[i].delete();
-
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Note deleted'),
-                                    duration: Duration(seconds: 1),
+                              subtitle: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (sectionTitle == "2024" ||
+                                      int.tryParse(sectionTitle) != null)
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 6),
+                                      child: Text(
+                                        "${sectionNotes[i].lastModified.day} ${_monthNameList[sectionNotes[i].lastModified.month - 1]}",
+                                        style: const TextStyle(
+                                            color: Colors.white38, fontSize: 13),
+                                      ),
+                                    ),
+                                  Expanded(
+                                    child: sectionNotes[i].description != null &&
+                                            sectionNotes[i].description!.isNotEmpty
+                                        ? Text(
+                                            sectionNotes[i].description!,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(color: Colors.white38),
+                                          )
+                                        : const SizedBox.shrink(),
+                                  ),
+                                ],
+                              ),
+                              onTap: () async {
+                                final updatedNote = await Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) =>
+                                        NoteDetailScreen(note: sectionNotes[i]),
                                   ),
                                 );
+                                if (updatedNote != null) {
+                                  sectionNotes[i].title = updatedNote.title;
+                                  sectionNotes[i].description =
+                                      updatedNote.description;
+                                  sectionNotes[i].save();
+                                }
                               },
-                              child: ListTile(
-                                dense: true,
-                                contentPadding:
-                                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                                title: Text(
-                                  sectionNotes[i].title,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                subtitle: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    if (sectionTitle == "2024" || int.tryParse(sectionTitle) != null)
-                                      Padding(
-                                        padding: const EdgeInsets.only(right: 6),
-                                        child: Text(
-                                          "${sectionNotes[i].lastModified.day} ${_monthNameList[sectionNotes[i].lastModified.month - 1]}",
-                                          style: const TextStyle(color: Colors.white38, fontSize: 13),
-                                        ),
-                                      ),
-                                    Expanded(
-                                      child: sectionNotes[i].description != null &&
-                                              sectionNotes[i].description!.isNotEmpty
-                                          ? Text(
-                                              sectionNotes[i].description!,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(color: Colors.white38),
-                                            )
-                                          : const SizedBox.shrink(),
-                                    ),
-                                  ],
-                                ),
-                                onTap: () async {
-                                  final updatedNote = await Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => NoteDetailScreen(note: sectionNotes[i]),
-                                    ),
-                                  );
-                                  if (updatedNote != null) {
-                                    sectionNotes[i].title = updatedNote.title;
-                                    sectionNotes[i].description = updatedNote.description;
-                                    sectionNotes[i].save();
-                                  }
-                                },
-                              ),
                             ),
-
-                            // Divider line (except after last note)
-                            if (i < sectionNotes.length - 1)
-                              Container(
-                                height: 0.6,
-                                color: Colors.white38,
-                                margin: const EdgeInsets.symmetric(horizontal: 16),
-                              ),
-                          ],
+                          ),
+                          if (i < sectionNotes.length - 1)
+                            Container(
+                              height: 0.6,
+                              color: Colors.white38,
+                              margin: const EdgeInsets.symmetric(horizontal: 16),
+                            ),
                         ],
-                      ),
+                      ],
                     ),
-                  ],
-                );
-              },
-            );
-
+                  ),
+                ],
+              );
+            },
+          );
         },
       ),
       floatingActionButton: FloatingActionButton(
@@ -548,7 +531,7 @@ class _SearchNotesScreenState extends State<SearchNotesScreen> {
                           builder: (_) => NoteDetailScreen(
                             note: note,
                             highlightQuery: highlight,
-                            scrollToMatchIndex: match["matchIndex"], // ✅ added for precise scroll
+                            matchGlobalOffset: match["matchIndex"], // ✅ added for precise scroll
                           ),
                         ),
                       );
@@ -1164,12 +1147,12 @@ class _AddNotesScreenState extends State<AddNotesScreen> {
 class NoteDetailScreen extends StatefulWidget {
   final Note note;
   final String? highlightQuery;
-  final int? scrollToMatchIndex; 
+  final int? matchGlobalOffset; 
   const NoteDetailScreen({
     super.key,
     required this.note, 
     this.highlightQuery, 
-    this.scrollToMatchIndex,
+    this.matchGlobalOffset,
   });
 
   @override
@@ -1186,6 +1169,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   int? _viewCaretOffset;
   int? _pendingInsertBlockIndex;
   int? _pendingInsertCaretOffset;
+  int? _highlightBlockIndex;
+  int? _highlightLocalOffset;
 
   late ScrollController _detailScrollController;
 
@@ -1201,39 +1186,11 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   void initState() {
     super.initState();
     titleController = TextEditingController(text: widget.note.title);
-    highlightQuery = widget.highlightQuery?.toLowerCase();
+    highlightQuery = widget.highlightQuery;
 
     _detailScrollController = ScrollController();
 
-    // 👇 Handle fade + scroll only once
-    if (highlightQuery != null && highlightQuery!.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        final primaryScrollController = PrimaryScrollController.of(context);
-        if (primaryScrollController.hasClients) {
-          // 🎯 Scroll directly to match index if available
-          final offset = widget.scrollToMatchIndex != null
-              ? (widget.scrollToMatchIndex! * 12.0)
-                  .clamp(0.0, primaryScrollController.position.maxScrollExtent)
-                  .toDouble() // ✅ fix: convert num → double
-              : 200.0;
-
-          primaryScrollController.animateTo(
-            offset,
-            duration: const Duration(milliseconds: 600),
-            curve: Curves.easeOutCubic,
-          );
-        }
-      });
-
-      // ✅ Fade highlight color after a short delay
-      Future.delayed(const Duration(seconds: 3), () {
-        if (mounted) {
-          setState(() => highlightOpacity = 0.0);
-        }
-      });
-    }
-
-    // Load or fallback
+    // ✅ Load or fallback blocks first
     if (widget.note.contentBlocks.isNotEmpty) {
       blocks = widget.note.contentBlocks
           .map((b) => Map<String, dynamic>.from(b))
@@ -1246,7 +1203,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       widget.note.save();
     }
 
-    // 🧠 Legacy link migration
+    // 🧠 Legacy link migration (unchanged)
     if (widget.note.links is Map) {
       final oldLinks = (widget.note.links as Map).entries.map((e) {
         return {
@@ -1261,9 +1218,51 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       widget.note.save();
     }
 
+    // 🎯 Resolve which block & offset contain the match (for precise highlight)
+    if (widget.matchGlobalOffset != null) {
+      final global = widget.matchGlobalOffset!;
+      int running = 0;
+      _highlightBlockIndex = null;
+      _highlightLocalOffset = null;
+
+      for (int bi = 0; bi < widget.note.contentBlocks.length; bi++) {
+        final block = widget.note.contentBlocks[bi];
+        if (block['type'] == 'text') {
+          final text = (block['content'] ?? '').toString();
+          final len = text.length;
+
+          if (global >= running && global < running + len) {
+            _highlightBlockIndex = bi;
+            _highlightLocalOffset = global - running;
+            break;
+          }
+
+          // account for '\n' separator used when joining description
+          running += len + 1;
+        }
+      }
+    }
+
+    // 🌀 Scroll directly to the block that holds the match
+    if (highlightQuery != null && highlightQuery!.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_detailScrollController.hasClients) {
+          final offset = (_highlightBlockIndex != null)
+              ? (_highlightBlockIndex! * 72.0)
+                  .clamp(0.0, _detailScrollController.position.maxScrollExtent)
+              : 200.0;
+
+          _detailScrollController.animateTo(
+            offset,
+            duration: const Duration(milliseconds: 600),
+            curve: Curves.easeOutCubic,
+          );
+        }
+      });
+    }
+
     _attachControllers();
   }
-
 
 
   void _wireTextBlock(Map<String, dynamic> b) {
@@ -1671,6 +1670,10 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     int cursor = 0;
     final query = highlightQuery?.toLowerCase() ?? '';
 
+    // 🧠 Use resolved highlight data from initState()
+    final highlightBlock = _highlightBlockIndex;
+    final highlightLocalOffset = _highlightLocalOffset ?? -1;
+
     // 🧹 Clean up dead links before rendering
     final notesBox = Hive.box<Note>('notesBox_v2');
     widget.note.links.removeWhere((l) {
@@ -1683,9 +1686,9 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     final ranges = _rangesForBlock(text, blockIndex);
 
     void addNormalSpan(String chunk) {
-      if (query.isNotEmpty && chunk.toLowerCase().contains(query)) {
+      if (query.isNotEmpty && chunk.toLowerCase().contains(query.toLowerCase())) {
         int start = 0, idx;
-        while ((idx = chunk.toLowerCase().indexOf(query, start)) != -1) {
+        while ((idx = chunk.toLowerCase().indexOf(query.toLowerCase(), start)) != -1) {
           if (idx > start) {
             spans.add(TextSpan(
               text: chunk.substring(start, idx),
@@ -1693,26 +1696,39 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
             ));
           }
 
-          // 🌈 Smooth background fade (true highlighter effect, no lift)
-          final bool isFaded = highlightOpacity <= 0.01;
-          final double opacity = isFaded ? 0.0 : highlightOpacity;
-          final bgPaint = Paint()
-            ..color = const Color(0xFF9B30FF).withOpacity(opacity * 0.35)
-            ..style = PaintingStyle.fill;
+          // 🎯 Highlight only the one match that was clicked from search
+          final absoluteStartInBlock = cursor + idx;
+          final absoluteEndInBlock = absoluteStartInBlock + query.length;
+          final bool shouldHighlightThisOne =
+              (highlightBlock == blockIndex) &&
+              (highlightLocalOffset >= absoluteStartInBlock &&
+              highlightLocalOffset < absoluteEndInBlock);
 
-          spans.add(TextSpan(
-            text: chunk.substring(idx, idx + query.length),
-            style: TextStyle(
-              color: Colors.white54,
-              background: bgPaint,
-              fontWeight: FontWeight.normal,
-              fontSize: 16,
-              height: 1.4,
-            ),
-          ));
+          if (shouldHighlightThisOne) {
+            final bgPaint = Paint()
+              ..color = const Color(0xFF9B30FF).withOpacity(0.4)
+              ..style = PaintingStyle.fill;
+
+            spans.add(TextSpan(
+              text: chunk.substring(idx, idx + query.length),
+              style: TextStyle(
+                color: Colors.white,
+                background: bgPaint,
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+                height: 1.4,
+              ),
+            ));
+          } else {
+            spans.add(TextSpan(
+              text: chunk.substring(idx, idx + query.length),
+              style: const TextStyle(color: Colors.white54, fontSize: 16),
+            ));
+          }
 
           start = idx + query.length;
         }
+
         if (start < chunk.length) {
           spans.add(TextSpan(
             text: chunk.substring(start),
